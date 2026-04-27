@@ -1,0 +1,22 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  validate-reproducibility:
+    runs-on: [self-hosted, sbe-cte-bench-runner]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.4"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --all-groups
+      - run: uv run pytest tests/e2e/test_reproducibility.py -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.ref_name }}-validation
+          path: results/

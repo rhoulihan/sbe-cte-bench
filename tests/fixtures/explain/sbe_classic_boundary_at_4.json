@@ -1,0 +1,71 @@
+{
+  "explainVersion": "2",
+  "stages": [
+    {
+      "$cursor": {
+        "queryPlanner": {
+          "namespace": "bench.orders",
+          "winningPlan": {
+            "queryPlan": {
+              "stage": "GROUP",
+              "inputStage": {
+                "stage": "IXSCAN",
+                "indexName": "IX_ORD_DATE"
+              }
+            },
+            "slotBasedPlan": {
+              "stages": "[1] group ..."
+            }
+          }
+        },
+        "executionStats": {
+          "executionTimeMillisEstimate": 50,
+          "totalKeysExamined": 5000,
+          "totalDocsExamined": 5000,
+          "nReturned": 5000
+        }
+      }
+    },
+    {
+      "$sort": {"sortKey": {"revenue": -1}},
+      "executionTimeMillisEstimate": 10,
+      "nReturned": 5000
+    },
+    {
+      "$limit": 5000,
+      "nReturned": 5000
+    },
+    {
+      "$bucketAuto": {
+        "groupBy": "$revenue",
+        "buckets": 10
+      },
+      "$cursor": {
+        "queryPlanner": {
+          "namespace": "bench.orders",
+          "winningPlan": {
+            "stage": "BUCKET_AUTO_CLASSIC"
+          }
+        }
+      },
+      "executionTimeMillisEstimate": 40,
+      "nReturned": 10
+    },
+    {
+      "$lookup": {
+        "from": "customers",
+        "localField": "_id",
+        "foreignField": "customer_id"
+      },
+      "executionTimeMillisEstimate": 25,
+      "nReturned": 10
+    },
+    {
+      "$project": {"revenue": 1, "c": 1},
+      "executionTimeMillisEstimate": 1,
+      "nReturned": 10
+    }
+  ],
+  "serverInfo": {"version": "8.2.2"},
+  "command": {"aggregate": "orders", "cursor": {}}
+}

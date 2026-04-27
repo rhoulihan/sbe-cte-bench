@@ -1,0 +1,114 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.5.4"
+
+jobs:
+  lint-and-types:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --all-groups
+      - run: uv run ruff check src/ tests/
+      - run: uv run ruff format --check src/ tests/
+      - run: uv run mypy src/ tests/
+      - run: uv run validate-pyproject pyproject.toml
+
+  unit:
+    runs-on: ubuntu-24.04
+    needs: lint-and-types
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --all-groups
+      - run: uv run pytest -m "unit or property or golden" --cov --cov-report=xml -n auto
+      - uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+
+  integration-standard:
+    runs-on: ubuntu-24.04
+    needs: unit
+    services:
+      mongo:
+        image: mongodb/mongodb-community-server:8.2.2-ubuntu2404
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ping:1})'"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - uses: gvenzl/setup-oracle-free@v1
+        with:
+          tag: "23-faststart"
+          app-user: BENCH
+          app-user-password: BenchPass2026
+      - run: uv sync --frozen --all-groups
+      - run: uv run pytest -m "integration and not sharded and not slow" -n 2
+
+  e2e-smoke:
+    runs-on: ubuntu-24.04
+    needs: integration-standard
+    services:
+      mongo:
+        image: mongodb/mongodb-community-server:8.2.2-ubuntu2404
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand({ping:1})'"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - uses: gvenzl/setup-oracle-free@v1
+        with:
+          tag: "23-faststart"
+          app-user: BENCH
+          app-user-password: BenchPass2026
+      - run: uv sync --frozen --all-groups
+      - run: uv run pytest -m "e2e and not sharded and not slow" --timeout=600
+
+  reproducibility:
+    runs-on: ubuntu-24.04
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --all-groups
+      - run: uv run python -c "from sbe_cte_bench.data.generator import generate; import hashlib, tempfile, json; d=tempfile.mkdtemp(); m1=generate(scale='SF0.001', output_dir=d+'/r1'); m2=generate(scale='SF0.001', output_dir=d+'/r2'); assert m1.hashes == m2.hashes, 'generator non-deterministic'"

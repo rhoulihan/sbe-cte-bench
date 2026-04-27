@@ -1,0 +1,156 @@
+[project]
+name = "sbe-cte-bench"
+version = "0.1.0.dev0"
+description = "Benchmark framework comparing MongoDB SBE aggregation pipeline to Oracle nested CTEs over JSON_TABLE / JSON Duality Views."
+readme = "README.md"
+authors = [
+  { name = "Rick Houlihan", email = "rick.houlihan@gmail.com" },
+]
+license = { text = "Apache-2.0" }
+requires-python = "==3.12.*"
+dependencies = [
+  "pymongo>=4.10,<5",
+  "oracledb>=2.4,<3",
+  "pydantic>=2.9,<3",
+  "numpy>=2.1,<3",
+  "matplotlib>=3.9,<4",
+  "seaborn>=0.13,<0.14",
+  "click>=8.1,<9",
+  "rich>=13.9,<14",
+  "structlog>=24.4,<25",
+]
+
+[project.scripts]
+sbe-cte-bench = "sbe_cte_bench.cli:main"
+
+[dependency-groups]
+dev = [
+  "ruff>=0.7,<0.13",
+  "mypy>=1.13,<2",
+  "pre-commit>=4.0,<5",
+  "pytest>=8.3,<9",
+  "pytest-cov>=6.0,<7",
+  "pytest-xdist>=3.6,<4",
+  "pytest-timeout>=2.3,<3",
+  "hypothesis>=6.115,<7",
+  "testcontainers>=4.8,<5",
+  "freezegun>=1.5,<2",
+  "validate-pyproject[all]>=0.22,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sbe_cte_bench"]
+
+# ─── Ruff ───────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E",    # pycodestyle errors
+  "F",    # pyflakes
+  "W",    # pycodestyle warnings
+  "I",    # isort
+  "B",    # flake8-bugbear
+  "UP",   # pyupgrade
+  "SIM",  # simplify
+  "PTH",  # use pathlib
+  "RUF",  # ruff-specific
+  "C4",   # comprehensions
+  "PIE",  # misc anti-patterns
+  "PT",   # pytest style
+  "TID",  # tidy imports
+  "ARG",  # unused arguments
+  "ERA",  # commented-out code
+  "S",    # bandit (security)
+  "N",    # pep8-naming
+]
+ignore = [
+  "S101",  # assert is fine in tests
+  "S603",  # subprocess: we audit our subprocess calls
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ARG", "S", "PT011"]
+"src/sbe_cte_bench/scenarios/**" = ["ARG003", "S608", "E501", "RUF001", "RUF002", "RUF003"]  # ScenarioBase methods accept variant; SQL strings f-built from internal-only inputs; × character intentional in narrative comments
+"src/sbe_cte_bench/reporting/cross_scenario.py" = ["RUF001"]  # × character in report tables is intentional
+"tests/unit/test_cross_scenario.py" = ["RUF001"]  # report assertions match × character
+"tests/unit/test_scenarios.py" = ["RUF002"]  # × character in S03 narrative docstrings
+"src/sbe_cte_bench/drivers/mongo.py" = ["E501"]
+"src/sbe_cte_bench/observability/oracle_xplan.py" = ["S608"]  # parameterized literal STATEMENT_ID, not SQL injection
+"src/sbe_cte_bench/observability/oracle_statspack.py" = ["S107"]  # default password is documented test fixture
+"src/sbe_cte_bench/drivers/oracle.py" = ["S107", "S608", "E501"]  # documented test password; SQL constructed from internal callers only
+
+[tool.ruff.lint.isort]
+known-first-party = ["sbe_cte_bench"]
+
+# ─── Mypy ───────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["oracledb.*", "pymongo.*", "bson.*", "testcontainers.*", "matplotlib.*", "seaborn.*", "freezegun.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_decorators = false
+
+# ─── Pytest ─────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+markers = [
+  "unit: pure-logic tests, no Docker, no network",
+  "integration: requires Docker/containers",
+  "property: hypothesis-driven property tests",
+  "golden: golden-file byte-stability tests",
+  "e2e: full scenario at SF0.001 (CI-sized)",
+  "slow: heavy/long-running; nightly only",
+  "sharded: requires sharded mongo topology",
+]
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--strict-config",
+  "--showlocals",
+  "--tb=short",
+]
+timeout = 120
+timeout_method = "thread"
+
+# ─── Coverage ──────────────────────────────────────────────────────────
+[tool.coverage.run]
+source = ["src/sbe_cte_bench"]
+branch = true
+omit = [
+  "src/sbe_cte_bench/infra/compose.py",
+  "src/sbe_cte_bench/infra/topology_swap.py",
+  "src/sbe_cte_bench/__main__.py",
+]
+parallel = true
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = false
+exclude_lines = [
+  "pragma: no cover",
+  "raise NotImplementedError",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+]
+
+# ─── uv ────────────────────────────────────────────────────────────────
+[tool.uv]
+package = true

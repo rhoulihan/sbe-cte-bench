@@ -1,0 +1,43 @@
+STATSPACK report for
+
+Database    DB Id    Instance     Inst Num  Startup Time    Release     RAC
+~~~~~~~~ ----------- ------------ -------- --------------- ----------- ---
+            12345678 FREE                1 25-Apr-26 14:15 26.0.0.0.0  NO
+
+Host Name             Platform                CPUs Cores Sockets   Memory (G)
+~~~~ ---------------- ---------------------- ----- ----- ------- ------------
+     bench-host       Linux x86 64-bit            2     2       1          4.0
+
+Snapshot       Snap Id     Snap Time      Sessions Curs/Sess Comment
+~~~~~~~~    ---------- ------------------ -------- --------- ------------------
+Begin Snap:          5 25-Apr-26 14:30:10        4       1.5
+  End Snap:          6 25-Apr-26 14:35:15        4       1.5
+   Elapsed:                5.08 (mins)
+   DB time:                4.92 (mins)
+
+Cache Sizes                       Begin        End
+~~~~~~~~~~~                  ---------- ----------
+               Buffer Cache:       768M       768M  Std Block Size:         8K
+           Shared Pool Size:       384M       384M      Log Buffer:     8,192K
+
+Load Profile                            Per Second       Per Transaction
+~~~~~~~~~~~~                            ---------------  ---------------
+                Logical reads:                 4,512.5            38.2
+                Physical reads:                  120.3             1.0
+                Redo size (bytes):            18,420.0           156.0
+                  Block changes:                  2.1             0.0
+                       Parses:                  18.5             0.16
+                  Hard parses:                   0.4             0.00
+                    Executes:                  120.0             1.02
+
+Top 5 Timed Events                                                 Wait     % DB
+~~~~~~~~~~~~~~~~~~                                                Time     time
+                                                  Avg              (s)
+Event                                  Waits      (ms)
+----------------------------------- ------------ ---------- ------------ ----
+db file sequential read                  18,420       2.5         46.1   45.2
+DB CPU                                                            33.0   32.4
+db file scattered read                    1,250       3.8          4.8    4.7
+log file sync                                40       0.5          0.0    0.0
+direct path read temp                     5,800       1.2          7.0    6.9
+                          ------------------------------------------------

@@ -1,0 +1,42 @@
+# Generated benchmark data
+data/*.bson
+data/*.json
+data/*.csv
+data/generated/
+
+# Run output
+results/raw/
+results/processed/
+results/charts/*.svg
+!results/charts/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# uv
+.python-version
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+results/raw_sf0001/

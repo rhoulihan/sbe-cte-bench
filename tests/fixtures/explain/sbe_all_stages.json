@@ -1,0 +1,48 @@
+{
+  "explainVersion": "2",
+  "stages": [
+    {
+      "$cursor": {
+        "queryPlanner": {
+          "namespace": "bench.orders",
+          "winningPlan": {
+            "queryPlan": {
+              "stage": "GROUP",
+              "inputStage": {
+                "stage": "IXSCAN",
+                "indexName": "IX_ORD_CUST_DATE"
+              }
+            },
+            "slotBasedPlan": {
+              "stages": "[1] group ..."
+            }
+          }
+        },
+        "executionStats": {
+          "executionTimeMillisEstimate": 42,
+          "totalKeysExamined": 1000,
+          "totalDocsExamined": 800,
+          "nReturned": 100
+        }
+      }
+    },
+    {
+      "$sort": {
+        "sortKey": {"revenue": -1}
+      },
+      "executionTimeMillisEstimate": 5,
+      "nReturned": 100
+    },
+    {
+      "$limit": 100,
+      "nReturned": 100
+    }
+  ],
+  "serverInfo": {
+    "version": "8.2.2"
+  },
+  "command": {
+    "aggregate": "orders",
+    "cursor": {}
+  }
+}

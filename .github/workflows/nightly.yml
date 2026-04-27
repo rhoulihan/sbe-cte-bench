@@ -1,0 +1,26 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 5 * * *"   # 05:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  e2e-full:
+    runs-on: [self-hosted, sbe-cte-bench-runner]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.5.4"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --all-groups
+      - run: uv run pytest -m "e2e or sharded" --timeout=3600
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-results
+          path: results/
+          retention-days: 30

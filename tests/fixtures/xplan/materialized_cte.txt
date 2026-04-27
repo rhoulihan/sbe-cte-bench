@@ -1,0 +1,22 @@
+SQL_ID  ag5xbq2s31xrd, child number 0
+-------------------------------------
+WITH heavy AS ( /*+ MATERIALIZE */ SELECT customer_id, SUM(amount)
+revenue FROM orders GROUP BY customer_id ) SELECT * FROM heavy a JOIN
+heavy b ON a.customer_id = b.customer_id WHERE a.revenue > 1000
+
+Plan hash value: 2847391051
+
+-------------------------------------------------------------------------------------
+| Id  | Operation                       | Name                     | Rows  | Cost  |
+-------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                |                          |       |   612 |
+|   1 |  TEMP TABLE TRANSFORMATION      |                          |       |       |
+|   2 |   LOAD AS SELECT (CURSOR DURATI)| SYS_TEMP_0FD9D6624_5C7A  |       |       |
+|   3 |    HASH GROUP BY                |                          |   100K|   245 |
+|   4 |     TABLE ACCESS FULL           | ORDERS                   |  1000K|   195 |
+|*  5 |   HASH JOIN                     |                          |   100K|   367 |
+|*  6 |    VIEW                         |                          |   100K|   183 |
+|   7 |     TABLE ACCESS FULL           | SYS_TEMP_0FD9D6624_5C7A  |   100K|   183 |
+|   8 |    VIEW                         |                          |   100K|   183 |
+|   9 |     TABLE ACCESS FULL           | SYS_TEMP_0FD9D6624_5C7A  |   100K|   183 |
+-------------------------------------------------------------------------------------

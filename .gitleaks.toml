@@ -1,0 +1,13 @@
+title = "sbe-cte-bench gitleaks config"
+
+[allowlist]
+description = "Test passwords and benchmark fixtures are deliberately committed"
+regexes = [
+  '''BenchPass2026''',
+  '''ORACLE_PWD=BenchPass2026''',
+  '''perfstat/bench''',
+]
+paths = [
+  '''docs/.*\.md$''',
+  '''IMPLEMENTATION-PLAN\.md$''',
+]

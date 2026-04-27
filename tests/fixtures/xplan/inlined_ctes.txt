@@ -1,0 +1,32 @@
+SQL_ID  bdpsy0qwd9zxj, child number 0
+-------------------------------------
+WITH recent_orders AS ( SELECT customer_id, amount FROM orders WHERE
+order_date >= SYSDATE - 90 ), top_clients AS ( SELECT customer_id,
+SUM(amount) AS revenue FROM recent_orders GROUP BY customer_id ORDER BY
+revenue DESC FETCH FIRST 100 ROWS ONLY ) SELECT t.customer_id, c.name FROM
+top_clients t JOIN customers c USING (customer_id)
+
+Plan hash value: 3947211042
+
+-------------------------------------------------------------------------------------
+| Id  | Operation                       | Name             | Rows  | Bytes | Cost  |
+-------------------------------------------------------------------------------------
+|   0 | SELECT STATEMENT                |                  |       |       |   289 |
+|   1 |  HASH JOIN                      |                  |   100 |  6500 |   289 |
+|*  2 |   VIEW                          |                  |   100 |  4900 |   245 |
+|*  3 |    SORT ORDER BY STOPKEY        |                  |   100 |  4900 |   245 |
+|   4 |     HASH GROUP BY               |                  |   100 |  4900 |   245 |
+|*  5 |      TABLE ACCESS BY INDEX ROWID| ORDERS_DOC       |  9000 |   436K|   245 |
+|*  6 |       INDEX RANGE SCAN          | IX_ORD_DATE      |  9000 |       |    25 |
+|   7 |   TABLE ACCESS FULL             | CUSTOMERS        | 100K  |  4400K|    44 |
+-------------------------------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+   2 - filter("rownum" <= 100)
+   5 - filter(JSON_VALUE("PAYLOAD", '$.order_date' RETURNING DATE) >= SYSDATE - 90)
+   6 - access("ORDER_DATE" >= SYSDATE - 90)
+
+Note
+-----
+   - dynamic statistics used: dynamic sampling (level=2)

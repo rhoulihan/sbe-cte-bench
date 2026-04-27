@@ -1,0 +1,14 @@
+{
+  "ts": "2026-04-25T10:00:00Z",
+  "op": "command",
+  "ns": "bench.orders",
+  "command": {"aggregate": "orders"},
+  "groupSpills": 5,
+  "groupSpilledBytes": 104857600,
+  "groupSpilledRecords": 80000,
+  "groupSpilledDataStorageSize": 52428800,
+  "sortSpills": 2,
+  "sortSpilledBytes": 20971520,
+  "sortSpilledRecords": 10000,
+  "millis": 8410
+}

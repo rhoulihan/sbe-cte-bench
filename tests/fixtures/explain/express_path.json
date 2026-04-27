@@ -1,0 +1,25 @@
+{
+  "explainVersion": "2",
+  "stages": [
+    {
+      "$cursor": {
+        "queryPlanner": {
+          "namespace": "bench.customers",
+          "winningPlan": {
+            "queryPlan": {
+              "stage": "EXPRESS_IXSCAN",
+              "indexName": "_id_"
+            }
+          }
+        },
+        "executionStats": {
+          "executionTimeMillisEstimate": 1,
+          "totalKeysExamined": 1,
+          "totalDocsExamined": 1,
+          "nReturned": 1
+        }
+      }
+    }
+  ],
+  "serverInfo": {"version": "8.2.2"}
+}

@@ -1,0 +1,7 @@
+{
+  "ts": "2026-04-25T10:00:00Z",
+  "op": "command",
+  "ns": "bench.orders",
+  "command": {"aggregate": "orders"},
+  "millis": 142
+}
