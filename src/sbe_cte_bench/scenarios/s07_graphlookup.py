@@ -63,26 +63,30 @@ class S07Recursive(ScenarioBase):
 
     @classmethod
     def variants(cls) -> list[Variant]:
-        # Restricted to variants that cross the threshold where the
-        # workload is large enough that engine architecture (not ADB
-        # per-query latency) determines the result. With branching=5
-        # the full 100K-employee tree saturates around depth 8; the
-        # depth-6 to depth-10 band is where Mongo's $graphLookup BFS
-        # round-trips compound vs Oracle's recursive CTE / CONNECT BY.
-        #
-        # Variants dropped from earlier design (small-graph variants
-        # whose result was dominated by ADB query overhead, not engine
-        # architecture):
-        #   org-d2 (25-node walk), org-d5 (3K), bom-* (50K parts but
-        #   small reachable subtrees), cycle-* (sparse), path-d5 (3K).
+        # Full 10-variant design covering four architectural test points.
+        # All Oracle paths now use CONNECT BY (not WITH RECURSIVE) — the
+        # Oracle-native hierarchical-query syntax has 30+ years of CBO
+        # tuning and ~7× lower per-query overhead.
         return [
-            # Depth scaling on subtree count + salary rollup.
-            Variant(label="org-d6", parameters={"family": "org", "depth": 6}),
-            Variant(label="org-d8", parameters={"family": "org", "depth": 8}),
+            # Depth scaling — org subtree subordinate-count + salary rollup.
+            Variant(label="org-d2", parameters={"family": "org", "depth": 2}),
+            Variant(label="org-d5", parameters={"family": "org", "depth": 5}),
             Variant(label="org-d10", parameters={"family": "org", "depth": 10}),
             Variant(label="org-d15", parameters={"family": "org", "depth": 15}),
-            # Path materialization at scale.
-            Variant(label="path-d8", parameters={"family": "path", "depth": 8}),
+            # Recursive enumeration — BOM leaf-part count.
+            Variant(label="bom-shallow", parameters={"family": "bom", "depth": 3}),
+            Variant(label="bom-deep", parameters={"family": "bom", "depth": 10}),
+            # Cycle detection — referral graph traversal with NOCYCLE.
+            Variant(
+                label="cycle-small",
+                parameters={"family": "cycle", "start": _CYCLE_ROOT_SMALL, "depth": 10},
+            ),
+            Variant(
+                label="cycle-large",
+                parameters={"family": "cycle", "start": _CYCLE_ROOT_LARGE, "depth": 20},
+            ),
+            # Path materialization.
+            Variant(label="path-d5", parameters={"family": "path", "depth": 5}),
             Variant(label="path-d10", parameters={"family": "path", "depth": 10}),
         ]
 
@@ -281,47 +285,36 @@ CONNECT BY NOCYCLE PRIOR employee_id = manager_id
 
     @classmethod
     def _oracle_bom(cls, depth: int) -> str:
-        # Recursive CTE — enumerate distinct leaf parts reachable from the
-        # top assembly within ``depth`` levels. Match the Mongo enumerable
-        # subset (DISTINCT leaf part_id count) so equivalence is clean.
-        # Oracle CAN compute true path-product rollups in this CTE shape
-        # (effective_qty * quantity in the recursive body) — the limitation
-        # is on Mongo's side and is captured in the scenario docstring.
+        # CONNECT BY: walk bom_edges from the root assembly, then post-join
+        # to parts to filter for leaves. ``LEVEL <= depth`` walks N levels
+        # of edges (matching Mongo's ``maxDepth = depth - 1``).
         return f"""
-WITH bom_walk (current_part_id, lvl) AS (
-  SELECT part_id, 0
-  FROM parts
-  WHERE part_id = {_BOM_ROOT}
-  UNION ALL
-  SELECT e.child_part_id, bw.lvl + 1
-  FROM bom_walk bw
-  JOIN bom_edges e ON e.parent_part_id = bw.current_part_id
-  WHERE bw.lvl < {depth}
-)
-SELECT COUNT(DISTINCT bw.current_part_id) AS leaf_count
-FROM bom_walk bw
-JOIN parts p ON p.part_id = bw.current_part_id
+SELECT COUNT(DISTINCT bw.child_part_id) AS leaf_count
+FROM (
+  SELECT child_part_id
+  FROM bom_edges
+  START WITH parent_part_id = {_BOM_ROOT}
+  CONNECT BY NOCYCLE PRIOR child_part_id = parent_part_id
+     AND LEVEL <= {depth}
+) bw
+JOIN parts p ON p.part_id = bw.child_part_id
 WHERE p.leaf = 1
 """.strip()
 
     @classmethod
     def _oracle_cycle(cls, start: int, depth: int) -> str:
-        # Recursive CTE with the CYCLE clause — Oracle 11g+ deduplicates
-        # paths that revisit the same row. ``cycle_mark`` is a generated
-        # column flagging cyclic paths.
+        # CONNECT BY NOCYCLE: walk the customer_referrals graph from the
+        # start customer downward (people they referred, transitively).
+        # NOCYCLE handles the deliberately-injected back-edges. ``LEVEL > 1``
+        # excludes the anchor; ``LEVEL <= depth + 1`` gives ``depth``
+        # descendant levels matching Mongo's ``maxDepth = depth - 1``.
         return f"""
-WITH downline (customer_id, referred_by, lvl) AS (
-  SELECT customer_id, referred_by, 0
-  FROM customer_referrals
-  WHERE customer_id = {start}
-  UNION ALL
-  SELECT cr.customer_id, cr.referred_by, d.lvl + 1
-  FROM downline d
-  JOIN customer_referrals cr ON cr.referred_by = d.customer_id
-  WHERE d.lvl < {depth - 1}
-) CYCLE customer_id SET cycle_mark TO 'Y' DEFAULT 'N'
-SELECT COUNT(*) - 1 AS downline_count
-FROM downline
+SELECT COUNT(*) AS downline_count
+FROM customer_referrals
+WHERE LEVEL > 1
+START WITH customer_id = {start}
+CONNECT BY NOCYCLE PRIOR customer_id = referred_by
+   AND LEVEL <= {depth + 1}
 """.strip()
 
     @classmethod
