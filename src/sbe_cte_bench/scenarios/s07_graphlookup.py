@@ -133,19 +133,21 @@ class S07Recursive(ScenarioBase):
 
     @classmethod
     def _mongo_bom(cls, depth: int) -> list[dict[str, Any]]:
-        # BOM enumeration: find distinct leaf parts reachable from the
-        # top assembly within ``depth`` levels.
+        # BOM enumeration: count distinct leaf parts reachable from the
+        # top assembly within ``depth`` levels. The pipeline starts on the
+        # single root part and never filters it away, so the output is
+        # always exactly one row — even when no leaf parts are reachable
+        # at shallow depth (matching Oracle's ``COUNT(DISTINCT...)`` shape).
         #
         # NOTE: a true BOM rollup multiplies edge quantities along the
-        # path (root → A_qty=5 → B_qty=3 → leaf_qty=2  ⇒  effective_qty=30).
+        # path (root_qty × edge_qty → effective leaf qty × unit_cost).
         # Oracle's recursive CTE does this in one pass with arithmetic in
         # the UNION ALL body. Mongo's ``$graphLookup`` returns reachable
         # edges but **cannot propagate values along the recursion path**,
-        # so a true multi-level path-product cannot be computed in a single
-        # pipeline. That gap is itself a measurement; here we test only the
-        # enumerable subset (distinct leaf-part count) so the equivalence
-        # check is clean. The architectural recursive-computation gap is
-        # documented in the scenario's prediction.
+        # so a true multi-level path-product cannot be computed in a
+        # single pipeline. That gap is a separate measurement; here we
+        # test only the enumerable subset (leaf-part count) so the
+        # equivalence check is clean.
         return [
             {"$match": {"part_id": _BOM_ROOT}},
             {
@@ -158,27 +160,26 @@ class S07Recursive(ScenarioBase):
                     "as": "edges",
                 }
             },
-            {"$unwind": "$edges"},
             {
                 "$lookup": {
                     "from": "parts",
                     "localField": "edges.child_part_id",
                     "foreignField": "part_id",
-                    "as": "child_part",
-                }
-            },
-            {"$unwind": "$child_part"},
-            {"$match": {"child_part.leaf": True}},
-            {
-                "$group": {
-                    "_id": None,
-                    "leaf_count": {"$addToSet": "$child_part.part_id"},
+                    "as": "child_parts",
                 }
             },
             {
                 "$project": {
                     "_id": 0,
-                    "leaf_count": {"$size": "$leaf_count"},
+                    "leaf_count": {
+                        "$size": {
+                            "$filter": {
+                                "input": "$child_parts",
+                                "as": "p",
+                                "cond": "$$p.leaf",
+                            }
+                        }
+                    },
                 }
             },
         ]
