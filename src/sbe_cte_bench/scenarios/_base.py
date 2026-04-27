@@ -74,6 +74,16 @@ class ScenarioBase(abc.ABC):
         """Return the variant sweep. Default: a single nameless variant."""
         return [Variant(label="default", parameters={})]
 
+    @classmethod
+    def mongo_collection(cls, variant: Variant | None = None) -> str:
+        """Collection the Mongo pipeline starts from.
+
+        Default: ``primary_collection``. Scenarios with variant families
+        that target different collections (e.g. S07's org/bom/cycle/path
+        variants) override this.
+        """
+        return cls.primary_collection
+
 
 # ─── Registry ─────────────────────────────────────────────────────────────
 

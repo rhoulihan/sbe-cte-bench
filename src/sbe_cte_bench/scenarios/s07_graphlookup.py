@@ -50,6 +50,18 @@ class S07Recursive(ScenarioBase):
     primary_collection: ClassVar[str] = "employees"
 
     @classmethod
+    def mongo_collection(cls, variant: Variant | None = None) -> str:
+        """org/path → ``employees``; bom → ``parts``; cycle → ``customers``."""
+        if variant is None:
+            return cls.primary_collection
+        family = variant.parameters.get("family")
+        if family == "bom":
+            return "parts"
+        if family == "cycle":
+            return "customers"
+        return "employees"
+
+    @classmethod
     def variants(cls) -> list[Variant]:
         return [
             # Depth scaling — org subtree subordinate-count + salary rollup.
@@ -195,10 +207,11 @@ class S07Recursive(ScenarioBase):
 
     @classmethod
     def _mongo_path(cls, depth: int) -> list[dict[str, Any]]:
-        # Path materialization: for each subordinate within ``depth``, build
-        # the chain of manager_ids from root → leaf. Mongo doesn't have a
-        # native path-output for $graphLookup, so we use ``depthField`` and
-        # sort by it then enumerate.
+        # Path materialization: count nodes at each depth level under the
+        # root, up to ``depth`` levels. Mongo's ``depthField`` is 0-indexed
+        # for direct children of the start node, so for ``depth=N`` we
+        # walk levels 0..(N-1) (N levels total). We add 1 to align with
+        # Oracle's 1-indexed LEVEL semantics in the equivalence check.
         return [
             {"$match": {"employee_id": _ORG_ROOT}},
             {
@@ -208,19 +221,19 @@ class S07Recursive(ScenarioBase):
                     "connectFromField": "employee_id",
                     "connectToField": "manager_id",
                     "maxDepth": depth - 1,
-                    "depthField": "level",
+                    "depthField": "depth0",
                     "as": "subtree",
                 }
             },
             {"$unwind": "$subtree"},
             {
                 "$group": {
-                    "_id": "$subtree.level",
+                    "_id": {"$add": ["$subtree.depth0", 1]},
                     "node_count": {"$sum": 1},
                 }
             },
-            {"$project": {"_id": 0, "level": "$_id", "node_count": 1}},
-            {"$sort": {"level": 1}},
+            {"$project": {"_id": 0, "lvl": "$_id", "node_count": 1}},
+            {"$sort": {"lvl": 1}},
         ]
 
     # ── Oracle SQL ───────────────────────────────────────────────────────
@@ -312,17 +325,19 @@ FROM downline
 
     @classmethod
     def _oracle_path(cls, depth: int) -> str:
-        # CONNECT BY — Oracle's native hierarchical-query syntax. Returns
-        # the count of nodes at each level, matching Mongo's depth-grouped
-        # output. ``LEVEL`` is 1-indexed for the anchor; we subtract 1 so
-        # the comparison aligns with Mongo's 0-indexed ``depthField``.
+        # CONNECT BY: Oracle's native hierarchical-query syntax. ``LEVEL``
+        # is 1-indexed at the anchor, so ``LEVEL <= depth + 1`` walks N
+        # levels of descendants. We filter ``LEVEL > 1`` to drop the anchor
+        # itself, matching Mongo's ``depthField`` which doesn't include the
+        # start node. ``LEVEL - 1`` re-bases to 1..depth for the equivalence
+        # check.
         return f"""
 SELECT (LEVEL - 1) AS lvl, COUNT(*) AS node_count
 FROM employees
 WHERE LEVEL > 1
 START WITH employee_id = {_ORG_ROOT}
 CONNECT BY NOCYCLE PRIOR employee_id = manager_id
-   AND LEVEL <= {depth}
+   AND LEVEL <= {depth + 1}
 GROUP BY (LEVEL - 1)
 ORDER BY lvl
 """.strip()

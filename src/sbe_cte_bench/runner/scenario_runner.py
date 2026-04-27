@@ -150,8 +150,9 @@ def run_scenario(
     for iter_idx in range(total_iters):
         is_warmup = iter_idx < cfg.warmup_iterations
 
+        mongo_coll = scenario_cls.mongo_collection(variant)
         m_rows, m_ms, m_err = _time_one(
-            lambda: list(mongo.aggregate(scenario_cls.primary_collection, pipeline))
+            lambda: list(mongo.aggregate(mongo_coll, pipeline))
         )
         if m_err is not None:
             mongo_errors.append(_error_record(m_err, iter_idx, is_warmup))
