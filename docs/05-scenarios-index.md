@@ -19,7 +19,7 @@ Fourteen scenarios cover the testable claims from the article plus four research
 | **S04** | 100 MB stage wall | `$group` and `$sort` working sets that cross the 100 MB per-stage RAM cap. Measures spill cost. | 3 | spec'd |
 | **S05** | 16 MiB document cap | `$group` + `$push` accumulator that exceeds 16 MiB per group. Designed to fail on Mongo. | 4 | spec'd |
 | **S06** | `$lookup` on sharded foreign | Local + foreign collection sharded; `$lookup` falls back to classic scatter-gather. | 5 | spec'd |
-| **S07** | Recursive traversal | Category taxonomy (4-level tree) + product rollup. `$graphLookup` (classic-only) vs Oracle recursive CTE. **Two topology variants**: unsharded and sharded (S06 topology). | 5, 6 | spec'd |
+| **S07** | Recursive traversal | 100K-employee org tree (branching=5). `$graphLookup` (classic-only) vs Oracle `CONNECT BY`. Six variants: depth-scaling subtree rollup (org-d2/d5/d10/d15) and per-level path materialization (path-d5/d10). | 5, 6 | spec'd |
 | **S08** | Window functions | `$setWindowFields` after a non-pushable preceding stage vs SQL window function. | 7 | spec'd |
 | **S09** | Predicate pushdown / join reordering | Same logical query written in two stage orders. Measures CBO's freedom to reorder vs Mongo's stage-bound semantics. | 8 | spec'd |
 | **S10** | Top-N optimization | `$sort` + `$limit` followed by additional stages vs `FETCH FIRST N ROWS ONLY` in CTE. | 9 | spec'd |

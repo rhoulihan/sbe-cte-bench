@@ -1,5 +1,9 @@
 # Implementation Plan — sbe-cte-bench
 
+> **⚠️ Status note (post-build):** this document captures the **original v1.0 build plan**, which assumed both engines run as Docker containers on a developer laptop. The project has since pivoted to **BYOE (bring-your-own-environment) on OCI Always Free** because the article's claims about Oracle's performance assume Exadata-class infrastructure (Smart Scan, In-Memory column store) that Oracle Database Free / `gvenzl/oracle-free` doesn't provide. Benchmarking against Free measures the engine without the platform it was designed for.
+>
+> **Current setup is documented in [`docs/02-infrastructure.md`](docs/02-infrastructure.md):** Oracle Autonomous DB (Always Free) + native MongoDB cgroup-capped to match the ADB envelope. Most of the technology choices in this plan (uv, hatchling, ruff, mypy, pytest, pydantic, oracledb-thin, pymongo) are still current. The Docker-specific sections (compose files, topology-swap, integration tests using testcontainers) are historical and have been removed from the codebase.
+
 This is the implementation plan for the benchmark spec in `docs/`. The spec is the *contract* (what to build); this plan is the *how* (in what order, with what tooling, validated by what tests, gated by what CI).
 
 The plan is opinionated. Choices are justified inline. Where the spec leaves a decision open, this plan closes it.

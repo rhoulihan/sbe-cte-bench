@@ -17,22 +17,17 @@ If a scenario shows MongoDB slower than Oracle, the scenario must show *why* —
 
 ### Hardware
 
-- Same host. Same SSD/NVMe. Same NUMA node. Same kernel. Same OS tuning.
-- **Both containers in the standard topology run with identical Docker resource limits**: `--cpus="2.0"`, `--memory="4g"`, `--cpuset-cpus` pinned to disjoint pairs. These limits exactly match Oracle Database 26ai Free's hard caps (2 CPU threads, 2 GB RAM combined SGA+PGA, 12 GB user data per PDB).
-- MongoDB has no equivalent caps. We **deliberately constrain MongoDB to Oracle Free's resource budget** so the comparison reflects engine architecture rather than headroom. Engine-internal RAM is matched: Mongo `wiredTigerCacheSizeGB=1.5`; Oracle `SGA_TARGET=1.2G + PGA_AGGREGATE_TARGET=0.6G = 1.8 GB` total.
-- A future revision running on Oracle EE on a larger host would extend the sweep to dataset and concurrency scales beyond Free's caps. The architectural phenomena under test (boundary tax, 100 MB/16 MiB caps, sharded fallback, OSON navigation) are scale-invariant, so v1.0 results at SF1 = 1 M orders are publishable as architectural findings without needing the larger sweep.
+- **Oracle:** Autonomous Database (Always Free is sufficient — 1 OCPU, ~3 GB shared SGA, 20 GB storage on Exadata-backed shared infrastructure). Smart Scan offload, In-Memory column store, transparent storage indexes — all enabled by default at the platform level.
+- **MongoDB:** native install on a separate host (typically an OCI Compute VM in the same region as the ADB). Capped via systemd cgroups to **`CPUQuota=200%` (= 2 vCPU = 1 OCPU equivalent)** and **`MemoryMax=3G`** — exactly matching ADB Always Free's compute envelope. WiredTiger cache pinned to 1.5 GB so Mongo can't quietly cheat its own memory cap.
+- Both engines have the same compute budget. The architectural difference (Exadata storage offload + CBO + parallel-eligible query plans on the Oracle side; classic-engine fallback paths + stage-bound semantics on the Mongo side) is the only independent variable.
+- Network: client harness on the same OCI compute VM as Mongo. ADB reached over LAN (sub-ms latency within region).
+- The architectural phenomena under test (boundary tax, 100 MB/16 MiB caps, sharded fallback, recursive traversal) are largely scale-invariant — SF1 (1M orders, 100K customers, 100K employees) is sufficient to publish architectural findings.
 
 #### Documented exception: S06 sharded topology
 
-S06 (and S14's V14-c variant) require a sharded MongoDB cluster. The minimal viable topology is two containers — one with `mongos` + config server + shard1, one with shard2 — each at the standard 2-CPU / 4-GB limit. **This gives the MongoDB cluster 2× the resources of the Oracle container** for those scenarios.
+S06 (and S14's V14-c variant) require a sharded MongoDB cluster. The user-provided BYOE setup has to add `mongos` + config + multiple shards on the client VM (the included install script provisions a single-node replica set only; sharded scenarios are skipped on that baseline). Two-shard configurations legitimately consume more resources than a single Oracle instance, so we don't try to cap them to the same envelope — the architectural cliff under test (SBE→classic fallback on sharded foreign + scatter-gather per local doc) is independent of resource budget. Giving Mongo 2× the resources doesn't repair the cliff.
 
-This asymmetry is *deliberate* and is documented in the scenario itself. Reasoning:
-
-- Production sharded MongoDB legitimately consumes more resources than a single Oracle instance. Constraining sharded MongoDB to single-shard resources would not be a fair comparison; it would be a straw man.
-- The architectural cliff under test (SBE→classic fallback on sharded foreign + scatter-gather per local doc) is independent of resource budget. Giving Mongo 2× the resources doesn't repair the cliff.
-- If MongoDB at 2× the resources still falls into the cliff (predicted: yes, with ratios in the 10–50× range), the result is more defensible — not less — because the comparison gave Mongo every reasonable advantage.
-
-S06 is the only scenario with this asymmetry. Every other scenario uses the standard topology with matched resource limits.
+S06 and the sharded variants of S07 / S14 are skipped by default on the BYOE setup; they require a sharded Mongo deployment the user provisions separately.
 
 ### Indexes
 

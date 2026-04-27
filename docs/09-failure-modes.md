@@ -86,9 +86,9 @@ This is the difference between the benchmark observing "MongoDB is slower" (unin
 ## What never counts as a failure
 
 - **Result-set size** — neither side has a size limit on streaming cursors / fetch results in the scenarios benchmarked here.
-- **Memory pressure on the host** — both containers have a 4 GB Docker limit; if either OOM-kills under normal load (not S04/S05 designed-failure scenarios), the host is undersized or a runaway query is leaking memory. Investigate; do not publish.
-- **Statistics staleness** — Oracle stats are gathered post-load; Mongo plan cache is warmed in the warmup phase. Anything that shows the engine in a "first cold call" state is a harness bug to fix, not a result to publish.
-- **Network jitter** — the harness and engines are on localhost; if loopback is jittery, it's a host configuration issue.
+- **Memory pressure on the host** — Mongo is cgroup-capped at 3 GB matching ADB Always Free's envelope; if it OOM-kills under normal load (not S04/S05 designed-failure scenarios), the client VM is undersized or a runaway query is leaking memory. On the ADB side, memory pressure shows up as `ORA-04036` / `ORA-04030` errors and the bench captures them. Investigate; do not publish.
+- **Statistics staleness** — Oracle stats should be gathered (`DBMS_STATS.GATHER_TABLE_STATS` for `BENCH`) post-load; Mongo plan cache is warmed in the warmup phase. Anything that shows the engine in a "first cold call" state is a harness bug to fix, not a result to publish.
+- **Network jitter** — the harness and Mongo are on the same OCI VM; ADB is reached over LAN within the same region (sub-ms latency). If LAN latency to ADB spikes, it's an OCI infrastructure issue.
 
 ## Note on `internalQueryForceClassicEngine`
 

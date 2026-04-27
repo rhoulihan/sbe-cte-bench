@@ -132,34 +132,22 @@ def data_load(
 
 
 # ─── infra ──────────────────────────────────────────────────────────────
+#
+# The harness expects a user-provided test environment:
+#   • Oracle Autonomous Database (Always Free is sufficient) with a
+#     wallet downloaded to disk and exposed via ORACLE_CONFIG_DIR.
+#   • A native MongoDB instance (typically on a separate VM) capped at
+#     the same OCPU / memory envelope as the ADB tier — see
+#     ``infra/install-mongodb-cgroup-capped.sh`` for an opinionated
+#     systemd cgroup setup that matches Always Free (1 OCPU / 3 GB).
+#
+# ``infra verify`` is the only lifecycle command — it preflights both
+# engines and reports whether they're reachable and properly configured.
 
 
-@main_group.group(name="infra", help="Topology lifecycle commands.")
+@main_group.group(name="infra", help="Topology preflight commands.")
 def infra_group() -> None:
     pass
-
-
-@infra_group.command("up")
-@click.option("--topology", type=click.Choice(["standard", "sharded"]), default="standard")
-def infra_up(topology: str) -> None:
-    """Bring up the requested topology via topology-swap.sh."""
-    import subprocess
-
-    script = Path(__file__).parent.parent.parent / "infra" / "topology-swap.sh"
-    proc = subprocess.run(
-        [str(script), "up", topology],
-        check=False,
-    )
-    sys.exit(proc.returncode)
-
-
-@infra_group.command("down")
-def infra_down() -> None:
-    import subprocess
-
-    script = Path(__file__).parent.parent.parent / "infra" / "topology-swap.sh"
-    proc = subprocess.run([str(script), "down"], check=False)
-    sys.exit(proc.returncode)
 
 
 @infra_group.command("verify")

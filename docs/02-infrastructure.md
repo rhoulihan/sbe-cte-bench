@@ -1,196 +1,231 @@
 # 02 — Infrastructure
 
-## Hardware (reference baseline for v1.0)
+## Why BYOE (bring your own environment)
 
-The benchmark is sized to run within **Oracle Database 26ai Free's hard limits** (12 GB user data per PDB, 2 GB SGA+PGA combined, 2 CPU threads). MongoDB is then deliberately constrained to the same resource budget so the comparison reflects engine architecture, not headroom.
+This benchmark requires a **real Oracle environment with Exadata-class features** —
+specifically Smart Scan, transparent storage offload, and the In-Memory column
+store. Those are not in Oracle Database Free or `gvenzl/oracle-free`. Without them
+the comparison would understate Oracle by measuring the *engine* in isolation
+from the *infrastructure that engine is designed to run on*. Most production
+Oracle deployments are on Exadata; benchmarking against Free is half the stack.
 
-| Component | Specification |
-|-----------|---------------|
-| CPU | ≥ 4 physical cores total. Two are dedicated to each engine container; remaining capacity hosts the harness and absorbs OS noise. Any modern x86_64 laptop or workstation suffices. |
-| Memory | ≥ 16 GB total. Two engine containers at 4 GB each + harness at 2 GB + OS overhead. |
-| Storage | ≥ 100 GB free on a local SSD/NVMe. SF1 dataset + indexes ≈ 10 GB per engine; spill space and run records add ~30 GB headroom. **No network-attached storage** — IO ceilings would mask engine architecture. |
-| Filesystem | XFS or ext4 with `noatime,nodiratime`. |
-| Network | Localhost only. Drivers run on the same host as both engines. No TCP/IP latency in the measurement loop. |
+The cheapest way to get Smart Scan + In-Memory in a benchmark is **Oracle
+Cloud's Autonomous Database — Always Free tier.** It provides:
 
-A **2024-era developer laptop** (8-core CPU, 16 GB RAM, 500 GB NVMe) runs this benchmark end-to-end. That's the target reproducibility envelope.
+- 1 OCPU (= 2 vCPU equivalent)
+- ~3 GB SGA / shared infrastructure
+- 20 GB storage
+- Smart Scan offload to Exadata storage cells (transparent)
+- In-Memory column store availability (auto-provisioned for hot tables)
+- 5 connection-tier services: `_high`, `_medium`, `_low`, `_tp`, `_tpurgent`
+- $0/month, no time limit, no card required
 
-**Atlas tiers (M0–M80) are explicitly rejected** for v1.0. Atlas tiers below M30 throttle IOPS; M30+ couples IOPS to provisioned-storage size in ways that make engine architecture unobservable. For the same reason, Oracle Autonomous Database tiers are rejected — ECPU-based throttling is a different observable than engine architecture. Both engines run **self-hosted in Docker** with matched resource limits.
+For MongoDB, we use a **native install with systemd cgroup caps** matching the
+ADB envelope: `CPUQuota=200%` (= 2 vCPU = 1 OCPU equivalent) and `MemoryMax=3G`.
+This is the apples-to-apples comparison: both engines have the same compute
+budget; the architectural differences (Exadata storage offload vs Mongo's
+classic-engine fallback paths) are the only independent variables.
 
-## OS
+## Required components
 
-| Component | Specification |
-|-----------|---------------|
-| Distribution | Ubuntu 24.04 LTS Server |
-| Kernel | 6.8 or newer |
-| Init | systemd |
-| Cgroups | v2 (default in 24.04) |
-| Swap | Disabled (`swapoff -a`; comment out swap entry in `/etc/fstab`). |
-| Transparent Huge Pages | Disabled (`echo never > /sys/kernel/mm/transparent_hugepage/enabled`). MongoDB and Oracle both perform better without THP. |
-| `vm.swappiness` | 1 |
-| `vm.dirty_ratio` | 15 |
-| `vm.dirty_background_ratio` | 5 |
-| Time sync | `chrony` running, system clock synced. |
+| | Specification |
+|---|---|
+| **Oracle Autonomous DB** | Always Free tier (or larger). User-provided. Wallet downloaded to client host. |
+| **MongoDB** | 8.0+ community edition, native install (not Atlas), single-node replica set, journaling on, `internalQueryFrameworkControl=trySbeEngine`. Capped at 2 vCPU / 3 GB via systemd cgroup overrides. |
+| **Client host** | OCI Compute VM in the same region as the ADB. Always Free supports a 4 OCPU VM (`VM.Standard.A1.Flex`) which is more than enough. |
+| **Network** | Client VM must reach `adb.<region>.oraclecloud.com:1522` over TLS — automatic on OCI internal network. |
 
-Tuning verification commands are in `docs/06-instrumentation.md`.
+## Provisioning the environment (OCI Always Free)
 
-## Topology
+### Step 1 — Provision the Autonomous Database
 
-Two topologies exist:
+1. Sign up for Oracle Cloud (Always Free is permanent, no card required).
+2. From the OCI console, navigate to **Oracle Database → Autonomous Database →
+   Create Autonomous Database**.
+3. Choose:
+   - Display name: `rhbench` (or any label)
+   - Database name: `RHBENCH`
+   - Workload type: **Transaction Processing** (mix of OLTP + analytics)
+   - Deployment type: Shared Infrastructure
+   - **Always Free**: ON
+   - Database version: 23ai or later (we tested 26ai EE 23.26.2.1.0)
+   - ADMIN password: set a strong one (12-30 chars, must contain upper/lower/digit/special, no double quotes, no `&`, no spaces).
+4. After provisioning (~3 min), click into the database. Click **Database
+   Connection**, then **Download Wallet**. Set a wallet password (commonly
+   different from the ADMIN password). Save the zip.
 
-1. **Standard** (S01–S05, S07–S13, S15): single-node replica-set MongoDB + Oracle 26ai Free + harness. Both engines on identical 2-CPU / 4-GB Docker resource limits.
-2. **Sharded** (S06, S07-sharded variant, S14 V14-c): two-container sharded MongoDB (1 mongos + configsvr + shard1 in container A; shard2 in container B) + Oracle 26ai Free + harness. MongoDB containers each get the same 2-CPU / 4-GB limit, so the sharded MongoDB cluster has 2× the resources of the Oracle container — a deliberate fairness exception documented in `scenarios/S06-lookup-sharded.md` and `08-fairness-charter.md`. All `mongod` instances (cfgsvr, shard1, shard2) run as single-node replica sets with journaling enabled — same as the standard topology's mongod.
+### Step 2 — Provision the client VM
 
-Only one topology is live at a time. The harness shuts down the standard topology before starting the sharded one for S06, then restores standard after S06 completes.
+1. From the OCI console, navigate to **Compute → Instances → Create instance**.
+2. Choose:
+   - Image: **Oracle Linux 9** (works with the install script in this repo)
+   - Shape: `VM.Standard.A1.Flex` — the Always Free tier gives you 4 OCPU /
+     24 GB. The benchmark fits comfortably; Mongo is cgroup-capped to a
+     fraction of that envelope.
+   - Networking: assign a public IP if you want SSH from outside OCI.
+   - SSH keys: upload your public key.
+3. Wait for the instance to be Running, then SSH in as `opc`.
 
-The standard topology is described below. The sharded topology is in `S06-lookup-sharded.md`.
-
-### Standard topology
-
-Both database engines run on the same physical host, in containers, with explicit CPU pinning and memory budgeting:
-
-```
-┌──────────────────────── host (≥4 vCPU, ≥16 GB RAM) ───────────────────────┐
-│                                                                            │
-│  ┌─ MongoDB container ──────┐    ┌─ Oracle 26ai Free container ─────────┐  │
-│  │ --cpus="2.0"             │    │ --cpus="2.0"                         │  │
-│  │ --memory="4g"            │    │ --memory="4g"                        │  │
-│  │ --cpuset-cpus="0-1"      │    │ --cpuset-cpus="2-3"                  │  │
-│  │ wt cache: 1.5 GB         │    │ SGA: 1.2 GB; PGA: 0.6 GB             │  │
-│  │ disk: /data/mongo        │    │ disk: /data/oracle                   │  │
-│  └──────────────────────────┘    └──────────────────────────────────────┘  │
-│                                                                            │
-│  ┌─ harness container (--cpus="1.0", --memory="2g") ─────────────────┐     │
-│  │ Python 3.12, pymongo, python-oracledb, matplotlib                  │    │
-│  └────────────────────────────────────────────────────────────────────┘    │
-│                                                                            │
-│  ┌─ idle reserve (remaining host CPUs) ──────────────────────────────┐     │
-│  │ absorbs OS noise, kthreads, container background work             │     │
-│  └────────────────────────────────────────────────────────────────────┘    │
-└────────────────────────────────────────────────────────────────────────────┘
-```
-
-Both engine containers have **identical CPU and memory budgets** — 2 CPUs and 4 GB Docker memory, with engine-internal RAM (WT cache for Mongo, SGA+PGA for Oracle) sized symmetrically at ~1.8 GB. This is the maximum Oracle Free permits; MongoDB is constrained to match.
-
-Why pinning matters: aggregation pipeline stages and CTE operators are CPU-intensive. Without pinning, the kernel scheduler can migrate threads across NUMA nodes mid-iteration, introducing 200–500 µs jitter that swamps small-scenario timings. On laptops, NUMA is usually irrelevant (single socket); on workstations or servers, both containers should be pinned to the same NUMA node and memory-bound (`numactl --membind=0`).
-
-## Container resource limits
-
-Both engine containers are launched with **identical Docker resource limits**, matched to Oracle Free's hard caps:
+### Step 3 — Install MongoDB on the client VM
 
 ```bash
-docker run -d \
-  --name=mongo-bench \
-  --cpus="2.0" \
-  --memory="4g" \
-  --memory-swap="4g" \
-  --cpuset-cpus="0-1" \
-  --memory-swappiness=0 \
-  --ulimit nofile=64000:64000 \
-  --volume /data/mongo:/data/db \
-  -p 27017:27017 \
-  mongodb/mongodb-community-server:8.2.2-ubuntu2404 \
-  --replSet=bench \
-  --bind_ip_all \
-  --wiredTigerCacheSizeGB=1.5 \
-  --journalCommitInterval=100
-
-# After container start, initialize the single-node replica set:
-docker exec mongo-bench mongosh --eval '
-  rs.initiate({ _id: "bench", members: [{ _id: 0, host: "mongo-bench:27017" }] })
-'
-
-docker run -d \
-  --name=oracle-bench \
-  --cpus="2.0" \
-  --memory="4g" \
-  --memory-swap="4g" \
-  --cpuset-cpus="2-3" \
-  --memory-swappiness=0 \
-  --ulimit nofile=64000:64000 \
-  --shm-size=2g \
-  --volume /data/oracle:/opt/oracle/oradata \
-  -p 1521:1521 \
-  -e ORACLE_PWD=BenchPass2026 \
-  container-registry.oracle.com/database/free:26ai
+curl -fLsSO https://raw.githubusercontent.com/rhoulihan/sbe-cte-bench/master/infra/install-mongodb-cgroup-capped.sh
+bash install-mongodb-cgroup-capped.sh
 ```
 
-Both containers have the same number of CPUs (`--cpus="2.0"`), the same memory ceiling (`--memory="4g"`), the same memory-swap policy, and the same file-descriptor ulimit. Disk volumes are sibling directories on the same physical device. The `--shm-size=2g` flag is Oracle-specific — Oracle uses POSIX shared memory for SGA and the default container `/dev/shm` (64 MB) is too small.
+This installs MongoDB 8.0, configures `mongod.conf` for single-node replica
+set + journaling + SBE, applies systemd cgroup caps (2 vCPU / 3 GB),
+initializes `rs0`, and verifies the primary is up. Takes ~2 minutes.
 
-The `--cpus="2.0"` limit hits Oracle Free's 2-CPU-thread cap exactly. MongoDB has no equivalent cap; matching to Oracle's is a deliberate fairness constraint — see `08-fairness-charter.md`.
+### Step 4 — Stage the wallet on the VM
 
-**Equivalence audit before each run:** the harness queries `docker stats --no-stream --format "{{.Container}} {{.CPUPerc}} {{.MemUsage}} {{.MemPerc}}"` and `docker inspect` for both containers to verify identical resource limits at iteration time. If a container has been rebuilt with different limits, the run is invalid.
+From your local machine:
 
-## MongoDB build
+```bash
+scp Wallet_rhbench.zip opc@<VM_IP>:/tmp/Wallet_rhbench.zip
+```
 
-Every `mongod` instance in this benchmark — across both the standard and sharded topologies — runs as a **single-node replica set with journaling enabled**. Specifically:
+On the VM:
 
-- Standard topology: one `mongod --replSet=bench` initialized via `rs.initiate({_id:"bench", members:[{_id:0, host:"mongo-bench:27017"}]})`.
-- Sharded topology: three single-node replica sets total — `cfgRS` (configsvr), `shard1` (shardsvr), `shard2` (shardsvr) — each initialized identically.
-- **Journaling**: WiredTiger journal is enabled by default in MongoDB 8.x and *cannot be disabled* (the `--nojournal` flag was removed in 6.1). The spec explicitly verifies via `db.serverStatus().wiredTiger.log` that the journal is active and that journal flush metrics are non-zero during write workloads.
+```bash
+mkdir -p ~/wallet
+unzip /tmp/Wallet_rhbench.zip -d ~/wallet
+chmod 700 ~/wallet && chmod 600 ~/wallet/*
 
-Why single-node replica sets specifically:
+# Fix sqlnet.ora — the wallet's default points to ?/network/admin
+sed -i "s|?/network/admin|$HOME/wallet|" ~/wallet/sqlnet.ora
+```
 
-1. **Transactions require a replica set.** A standalone `mongod` cannot run multi-document transactions; both `$out`/`$merge` inside transactions (S14) and the implicit transaction semantics of `$lookup` semantics on shard-versioned reads need a replica set.
-2. **Replica sets enforce write durability semantics.** With `w:1` (default) and journaling on, every committed write is durable to disk before the client acknowledgment returns. This matches Oracle's `COMMIT` semantics and makes write-throughput measurements (S14) directly comparable.
-3. **Single-node** keeps the footprint within Oracle Free's resource envelope. We're not benchmarking replication overhead; we're benchmarking aggregation architecture. A 3-node replica set would add network latency between nodes that has nothing to do with the question under test.
+### Step 5 — Create the BENCH user in ADB
 
-| Setting | Value | Notes |
-|---------|-------|-------|
-| Source | Official `mongodb/mongodb-community-server:8.2.2-ubuntu2404` image (or any 8.2.x patch tag) | Pin tag exactly. Do not use `latest`. |
-| Engine | WiredTiger (default) | |
-| `replication.replSetName` | `bench` (standard) / `cfgRS`, `shard1`, `shard2` (sharded) | All `mongod` instances run as single-node replica sets. |
-| `storage.journal.enabled` | `true` | Default and unchangeable in 8.x. Verified in pre-run audit. |
-| `storage.syncPeriodSecs` | `60` | Default WT checkpoint cadence. |
-| `storage.wiredTiger.engineConfig.cacheSizeGB` | **1.5** | Sized to fit within the 4 GB Docker container budget after WT overhead, OS, and the mongod process. Symmetric to Oracle's SGA. |
-| `setParameter.internalQueryFrameworkControl` | `trySbeEngine` | **Critical.** Forces SBE on for SBE-eligible queries. Default in 8.0 is `trySbeEngine`; we explicitly set it for paranoia and forward-compatibility. |
-| `setParameter.allowDiskUseByDefault` | `true` | Default in 6.0+. Set explicitly. |
-| `setParameter.internalDocumentSourceGroupMaxMemoryBytes` | `104857600` (100 MB) | The default. We pin it to defeat any host-OS variation. Scenarios may override for ablation. **Note:** 100 MB is ~7% of the WT cache; Oracle's PGA is ~30% of its SGA. Same architectural per-stage cap, very different fraction of total RAM. This is the architectural difference S04 exists to measure. |
-| `setParameter.internalQueryMaxAddToSetBytes` | `104857600` | Default. |
-| `setParameter.internalQueryMaxPushBytes` | `104857600` | Default. |
-| `setParameter.internalQueryExecMaxBlockingSortBytes` | `104857600` | Default. |
-| `net.compression.compressors` | (default) | Driver compression off for the harness. |
-| `operationProfiling.mode` | `slowOp` | |
-| `operationProfiling.slowOpThresholdMs` | `0` | Profile every operation during a benchmark run; turn off between runs. |
+The harness operates as a non-DBA user (`BENCH`). Create it as `ADMIN`:
 
-The MongoDB instance runs as a single-node replica set (`--replSet bench`) so it supports `$out`/`$merge` inside transactions where applicable. It is **not** sharded for the standard topology — sharded scenarios (S06 only) use a separate, dedicated **2-container sharded topology** (1 mongos + cfgsvr + shard1 in container A; shard2 in container B), described in detail in `scenarios/S06-lookup-sharded.md`. The harness swaps topologies (stops standard, starts sharded, runs S06, stops sharded, restarts standard) so only one topology is live at a time.
+```sql
+-- Connect as ADMIN/<your_admin_password> via SQL Developer Web or sqlplus
+CREATE USER BENCH IDENTIFIED BY "Sbe2Cte_v1_Run_2026!"
+  QUOTA UNLIMITED ON DATA;
+GRANT CONNECT, RESOURCE, DWROLE TO BENCH;
+ALTER USER BENCH DEFAULT TABLESPACE DATA;
+GRANT UNLIMITED TABLESPACE TO BENCH;
+```
 
-S14 (write path with sharded `$merge` target) reuses the S06 sharded topology when its V14-c variant runs.
+ADB enforces password complexity (12-30 chars, mixed case, digit, special, no
+double quotes, must not contain the username). The BENCH password used here
+satisfies these.
 
-## Oracle build
+### Step 6 — Set up the harness
 
-| Setting | Value | Notes |
-|---------|-------|-------|
-| Source | `container-registry.oracle.com/database/free:26ai` | Pin tag exactly. |
-| Edition | Free | **Hard limits enforced by Free:** 12 GB user data per PDB, 2 GB SGA+PGA combined, 2 CPU threads, 1 PDB. The benchmark sizes itself within these caps. |
-| `MEMORY_TARGET` | unset | Use explicit SGA + PGA targets instead — `MEMORY_TARGET` and AMM are deprecated. |
-| `SGA_TARGET` | `1200M` | Within Free's 2 GB combined cap. |
-| `PGA_AGGREGATE_TARGET` | `600M` | Within Free's 2 GB combined cap. Total = 1.8 GB engine RAM, leaving headroom inside the 4 GB container. |
-| `WORKAREA_SIZE_POLICY` | `AUTO` | Default. |
-| `OPTIMIZER_INDEX_COST_ADJ` | (default) | Don't tilt the optimizer. |
-| `_optimizer_use_feedback` | `TRUE` | Default. Allows adaptive plan tuning between runs. Cleared between scenarios. |
-| `RESULT_CACHE_MODE` | `MANUAL` | Disable automatic result caching to prevent hits across iterations. |
-| `OPTIMIZER_CAPTURE_SQL_PLAN_BASELINES` | `FALSE` | No baseline pinning. We want the CBO to plan freshly per scenario. |
-| Tablespace | `BENCH_DATA` on `/opt/oracle/oradata/FREE/FREEPDB1/bench_data.dbf` (autoextensible to 11 GB max) | Sized to fit within Free's 12 GB user-data cap with 1 GB headroom for system segments. |
-| Temp tablespace | Default `TEMP` (managed by Free image) | Spill operations use this; not counted against the 12 GB user-data cap. |
-| User | `BENCH` (created with `DBA` role for setup, downgraded to specific privileges for runs) | |
-| Compatible | `26.0.0` | |
-| **Statspack** | Installed | AWR is part of the Diagnostic Pack and not included in Oracle Free. Statspack — Oracle's free, included-since-8i performance repository — provides equivalent system-wide snapshot reports. Installed via `?/rdbms/admin/spcreate.sql`. Used for system-wide instrumentation per `06-instrumentation.md`. |
-| `PERFSTAT` user | Created during init | Owns Statspack tables; password pinned per run for reproducibility. |
-| `PERFSTAT` tablespace | 256 MB autoextending to 1 GB on `/opt/oracle/oradata/FREE/FREEPDB1/perfstat.dbf` | Sized for dozens of snapshots; purged between scenarios. |
+```bash
+git clone https://github.com/rhoulihan/sbe-cte-bench.git
+cd sbe-cte-bench
 
-A single PDB (`FREEPDB1` is fine) hosts everything. We do not use a multitenant CDB switch in the timing loop.
+# uv manages Python 3.12 and dependencies
+curl -fLsS https://astral.sh/uv/install.sh | bash
+export PATH=~/.local/bin:$PATH
+uv sync --python 3.12
 
-## Harness host
+# Connect creds (export these or pass per-command)
+export ORACLE_CONFIG_DIR=$HOME/wallet
+export ORACLE_USER=BENCH
+export ORACLE_PASSWORD='Sbe2Cte_v1_Run_2026!'
+export ORACLE_DSN=rhbench_high           # or _medium / _low / _tp depending on need
+export ORACLE_WALLET_PASSWORD='<wallet_password>'
 
-The harness runs in a dedicated container with `--cpus="1.0"` and `--memory="2g"`, pinned to a CPU outside the 0–3 range used by the engine containers. The harness is single-threaded (or single-process for concurrent-load scenarios). It connects via:
+# Verify both engines respond
+uv run sbe-cte-bench infra verify
+```
 
-- MongoDB: `mongodb://localhost:27017/?replicaSet=bench&directConnection=true`
-- Oracle: `oracledb.connect(user="BENCH", password="…", dsn="localhost/FREEPDB1")` in thin mode. (Oracle 26ai Free's default service is `FREEPDB1` per the 26ai container image.)
+Expected output:
 
-Both connections use the loopback interface. No TLS. No driver-side compression. These are bench-only choices that document the *engine* architecture and not the wire format.
+```
+mongo preflight: MongoPreflightStatus(framework_control='trySbeEngine',
+  journal_enabled=True, replica_set_initialized=True, server_version='8.0.21')
+oracle preflight: OraclePreflightStatus(server_version='Oracle AI Database
+  26ai Enterprise Edition Release 23.26.2.1.0 - Production', sga_target_mb=0,
+  pga_aggregate_target_mb=0, statspack_installed=False, is_autonomous=True)
+```
 
-## Reproducibility
+`is_autonomous=True` indicates the harness detected ADB and skipped the
+DBA-only checks (`v$instance`, `v$parameter`, `dba_users` are restricted to
+ADMIN on ADB).
 
-The full setup is captured as a `compose.yaml` file in `harness/infra/` (TBD). Running `docker compose up` should bring up both containers, the harness container, and a `setup` job that creates the schemas, tablespaces, and benchmark user.
+### Step 7 — Generate + load data
 
-The container images, the OS image, and the harness Python version are all pinned. The benchmark must be runnable end-to-end from a clean host in under 30 minutes (data load excluded — see `docs/03-data-model.md` for scale-factor durations).
+```bash
+uv run sbe-cte-bench data generate --scale SF1 --output-dir data/generated
+uv run sbe-cte-bench data load --target both --data-dir data/generated
+```
+
+SF1 = 100K customers, 1M orders, 100K employees (org tree), 50K parts. Data
+generation takes ~50-60 min on the Always Free 1 OCPU VM (single-threaded
+Python); load is ~2 min for Mongo + ~3 min for ADB over the OCI internal
+network.
+
+## Service tier choice (`ORACLE_DSN`)
+
+Autonomous DB exposes five connection services with different
+parallel/concurrency profiles:
+
+| Service | Parallel query | Concurrency | Use for |
+|---|---|---:|---|
+| `_high` | yes | 3 | Default for this bench. Analytical aggregations get parallel-execution help; CTE recursion can fuse iterations. |
+| `_medium` | yes | 10 | Mixed workload baseline. |
+| `_low` | no | 300 | Sequential serial execution; good for verifying we're not just measuring parallel-coordinator overhead. |
+| `_tp` | no | 300 | OLTP. |
+| `_tpurgent` | no | 300 | Highest priority OLTP. |
+
+We default to `_high` because the article's claim is that Oracle's CBO **with
+parallel-execution support** beats Mongo's classic-engine fallback paths.
+Throttling Oracle to `_low` would artificially neuter the architectural
+advantage. Set `ORACLE_DSN=rhbench_low` if you want a more conservative
+comparison.
+
+## Network considerations
+
+Provision the client VM in **the same OCI region** as the ADB — both Always
+Free tiers are in the home region you select at sign-up. Within-region OCI
+network gives sub-millisecond LAN latency to ADB. Cross-region adds ~50-200 ms
+per round-trip and dominates measurement.
+
+The harness alternates Mongo and Oracle iterations per cycle. Even at LAN
+speeds, the cumulative round-trip for the Oracle warmup+iter pattern (7×
+queries with explain capture) adds ~1-2 sec per scenario variant; this is
+absorbed into the warmup measurements.
+
+## Verifying Smart Scan / In-Memory are firing
+
+After loading, `EXPLAIN PLAN FOR <SQL>` on a large aggregation (e.g., S04)
+should show `TABLE ACCESS STORAGE FULL` operators. Storage-side filtering
+shows up as `STORAGE` row-source predicates. If you see `TABLE ACCESS FULL`
+without `STORAGE`, you're on a non-Exadata service tier — possible on some
+older ADB SKUs. The default Always Free is Exadata-backed.
+
+For In-Memory, query `V$IM_SEGMENTS` from the BENCH user (read access is
+granted via DWROLE):
+
+```sql
+SELECT segment_name, populate_status, bytes_not_populated
+FROM v$im_segments
+WHERE owner = 'BENCH';
+```
+
+ADB auto-populates large tables into the IM column store opportunistically;
+this happens lazily after first analytical query. If you want immediate
+population for the bench, run `ALTER TABLE orders_doc INMEMORY;` on the
+hot tables after load.
+
+## What's NOT in the test environment
+
+- **Sharded MongoDB topology** — would require running multiple `mongod`
+  instances + `mongos` router. The `infra/install-mongodb-cgroup-capped.sh`
+  script sets up a single-node replica set; sharded scenarios (S06, sharded
+  variants of S07/S14) are skipped on this baseline. To exercise them,
+  follow MongoDB's official sharded-cluster docs and re-run the harness.
+
+- **Exadata Smart Scan offload knobs** — Oracle Smart Scan is automatic on
+  ADB; it's not a per-query feature you toggle. The benchmark observes
+  whether it fires through `dbms_xplan` output, but doesn't try to
+  manipulate it.
+
+- **Statspack** — replaced by ADB's built-in AWR (DBA-only on Always Free).
+  The harness gracefully skips Statspack collection when `is_autonomous=True`.
