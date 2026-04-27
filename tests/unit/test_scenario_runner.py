@@ -120,7 +120,12 @@ class _OracleMock:
 @pytest.fixture
 def cfg_fast() -> RunConfig:
     """Tiny iteration counts for fast unit tests."""
-    return RunConfig(warmup_iterations=1, measurement_iterations=3, capture_explain=True)
+    return RunConfig(
+        warmup_iterations=1,
+        measurement_iterations=3,
+        capture_explain=True,
+        capture_sql_monitor=False,
+    )
 
 
 @pytest.mark.unit

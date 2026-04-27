@@ -25,6 +25,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Protocol
 
 from sbe_cte_bench.config.run_record import (
@@ -67,6 +68,10 @@ class OracleLike(Protocol):
 
     def explain_plan(self, sql: str) -> str: ...
 
+    def execute_with_sql_monitor(
+        self, sql: str, *, module: str = ..., action: str = ...
+    ) -> tuple[list[dict[str, Any]], str]: ...
+
     def preflight(self) -> Any: ...
 
 
@@ -87,6 +92,10 @@ class RunConfig:
     capture_explain: bool = True
     abort_on_equivalence_failure: bool = True
     host_info: HostInfo | None = None
+    capture_sql_monitor: bool = True
+    """If True, after the measurement loop run one extra Oracle execution
+    with ``/*+ MONITOR */`` and capture the active SQL Monitor HTML report.
+    Adds ~1 query's worth of time per scenario (not folded into timings)."""
 
 
 # ─── The runner ──────────────────────────────────────────────────────────
@@ -206,7 +215,17 @@ def run_scenario(
     predictions = scenario_cls.predictions(chosen)
     prediction_block = _evaluate_first_prediction(predictions, metrics)
 
-    # ── 7. Assemble the run record. ──────────────────────────────────────
+    # ── 7. SQL Monitor active report capture (off the timing path). ──────
+    sql_monitor_path: str | None = None
+    if cfg.capture_sql_monitor and not oracle_errors:
+        sql_monitor_path = _capture_sql_monitor(
+            oracle=oracle,
+            scenario_id=scenario_cls.id,
+            variant_label=chosen.label,
+            sql=sql,
+        )
+
+    # ── 8. Assemble the run record. ──────────────────────────────────────
     return _assemble_record(
         scenario_cls=scenario_cls,
         variant=chosen,
@@ -224,6 +243,7 @@ def run_scenario(
         prediction=prediction_block,
         warmup_mongo=mongo_split.warmup,
         warmup_oracle=oracle_split.warmup,
+        sql_monitor_path=sql_monitor_path,
     )
 
 
@@ -250,6 +270,39 @@ def _error_record(exc: BaseException, iteration: int, is_warmup: bool) -> dict[s
         "message": str(exc)[:500],
         "expected": False,  # set True in the scenario writeup if the failure is designed
     }
+
+
+_SQL_MONITOR_DIR = Path("results/sql_monitor")
+
+
+def _capture_sql_monitor(
+    *, oracle: OracleLike, scenario_id: str, variant_label: str, sql: str
+) -> str | None:
+    """Run one extra Oracle execution with ``/*+ MONITOR */`` and save the
+    active SQL Monitor HTML report.
+
+    Returns the relative path (under repo root) to the saved HTML, or
+    ``None`` on any error. Errors are intentionally swallowed — SQL Monitor
+    capture is observability sugar, not core measurement.
+    """
+    try:
+        _, html = oracle.execute_with_sql_monitor(
+            sql,
+            module=f"sbe-cte-bench/{scenario_id}",
+            action=variant_label,
+        )
+    except Exception:
+        return None
+    if not html:
+        return None
+    safe_label = variant_label.replace("/", "_").replace(" ", "_")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    filename = f"{scenario_id}-{safe_label}-{timestamp}.html"
+    out_dir = _SQL_MONITOR_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / filename
+    out_path.write_text(html, encoding="utf-8")
+    return str(out_path)
 
 
 def _empty_distribution() -> TimingDistribution:
@@ -398,6 +451,7 @@ def _assemble_record(
     prediction: PredictionBlock,
     warmup_mongo: list[float],
     warmup_oracle: list[float],
+    sql_monitor_path: str | None = None,
 ) -> RunRecord:
     # Round-trip the raw explain through JSON with default=str so that any
     # BSON-specific types (Timestamp, ObjectId, Decimal128) flatten to strings
@@ -453,6 +507,7 @@ def _assemble_record(
         plan=plan_block,
         workarea={},
         statspack=StatspackBlock(),
+        sql_monitor_path=sql_monitor_path,
         timings_ms=[float(t) for t in mongo_dist_timings(oracle_dist, warmup_oracle)],
         median_ms=oracle_dist.median_ms,
         p95_ms=oracle_dist.p95_ms,

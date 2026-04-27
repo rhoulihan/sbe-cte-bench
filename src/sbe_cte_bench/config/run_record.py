@@ -82,6 +82,9 @@ class OracleBlock(TimingBlock):
     plan: dict[str, Any] = Field(default_factory=dict)
     workarea: dict[str, Any] = Field(default_factory=dict)
     statspack: StatspackBlock = Field(default_factory=StatspackBlock)
+    sql_monitor_path: str | None = None
+    """Relative path to the active SQL Monitor HTML report saved under
+    ``results/sql_monitor/``. ``None`` if capture was skipped or failed."""
 
 
 class EquivalenceBlock(BaseModel):

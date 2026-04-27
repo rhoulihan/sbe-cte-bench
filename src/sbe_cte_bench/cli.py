@@ -417,6 +417,34 @@ def report_all(raw_dir: Path, output: Path, scale_factor: str) -> None:
     click.echo(f"wrote {result}")
 
 
+@report_group.command("html")
+@click.option(
+    "--raw-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=Path("results/raw"),
+)
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=Path("results/processed/dashboard.html"),
+)
+@click.option("--scale-factor", default="SF1", help="Scale factor label for the dashboard header.")
+def report_html(raw_dir: Path, output: Path, scale_factor: str) -> None:
+    """Render a self-contained HTML dashboard.
+
+    Walks ``raw_dir`` for the latest record per (scenario, variant) and emits
+    a single HTML file at ``output`` containing per-scenario tabs (Mongo
+    pipeline / Mongo explain / Oracle SQL / Oracle plan / SQL Monitor link)
+    with Chart.js comparison plots. Self-contained except for Chart.js
+    loaded from CDN. SQL Monitor active reports are linked relatively
+    from ``results/sql_monitor/``.
+    """
+    from sbe_cte_bench.reporting.html_dashboard import render_dashboard
+
+    render_dashboard(raw_dir=raw_dir, output=output, scale_factor=scale_factor)
+    click.echo(f"wrote {output}")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Console-script entry point. Returns 0 on success."""
     try:

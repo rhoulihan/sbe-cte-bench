@@ -183,6 +183,83 @@ class OracleBench:
             )
             return "\n".join(row[0] for row in cur.fetchall() if row[0] is not None)
 
+    def execute_with_sql_monitor(
+        self,
+        sql: str,
+        *,
+        module: str = "sbe-cte-bench",
+        action: str = "monitor",
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Execute ``sql`` once with the ``MONITOR`` hint, then capture the
+        active SQL Monitor HTML report for the executing session.
+
+        Used for the post-measurement capture run. The query is timed
+        separately (not folded into the iteration timings) and adds the
+        ``/*+ MONITOR */`` hint to force SQL Monitor to record this
+        execution even when the query finishes in <5 sec.
+
+        On Autonomous Database the ``v$sql_monitor`` view is restricted to
+        DBA users, so we identify the execution by the session's SID
+        (visible to the connecting user via ``SYS_CONTEXT('USERENV','SID')``)
+        and let ``DBMS_SQLTUNE.REPORT_SQL_MONITOR`` resolve the most-recent
+        SQL_ID for that session internally.
+
+        Returns ``(rows, html_active_report)``. The HTML is the raw active
+        report (a self-contained HTML page including its CSS + JS hooks
+        into Oracle's online diagnostic infrastructure).
+        """
+        sql_with_hint = self._inject_monitor_hint(sql)
+        with self.acquire() as conn, conn.cursor() as cur:
+            cur.callproc(
+                "DBMS_APPLICATION_INFO.SET_MODULE", [module, action]
+            )
+            cur.execute("SELECT SYS_CONTEXT('USERENV', 'SID') FROM dual")
+            sid = int(cur.fetchone()[0])
+
+            cur.execute(sql_with_hint)
+            columns = [d[0].lower() for d in (cur.description or [])]
+            rows = [dict(zip(columns, row, strict=False)) for row in cur.fetchall()]
+
+            clob = cur.var(oracledb.DB_TYPE_CLOB)
+            cur.execute(
+                """
+                BEGIN
+                    :report := DBMS_SQLTUNE.REPORT_SQL_MONITOR(
+                        session_id => :sid, type => 'ACTIVE'
+                    );
+                END;
+                """,
+                report=clob,
+                sid=sid,
+            )
+            value = clob.getvalue()
+            html = value.read() if value is not None else ""
+            return rows, html
+
+    @staticmethod
+    def _inject_monitor_hint(sql: str) -> str:
+        """Insert ``/*+ MONITOR */`` immediately after the leading SELECT/WITH.
+
+        Robust to leading whitespace and the WITH-CTE prefix used by most
+        recursive scenarios. Falls through to a no-op for non-SELECT
+        statements (which shouldn't reach this path anyway).
+        """
+        lstripped = sql.lstrip()
+        # ``WITH`` queries — hint goes after the first SELECT keyword inside.
+        upper = lstripped.upper()
+        if upper.startswith("SELECT "):
+            return "SELECT /*+ MONITOR */ " + lstripped[len("SELECT "):]
+        if upper.startswith("WITH "):
+            # Find the first SELECT and inject after it.
+            idx_select = upper.find("SELECT", len("WITH "))
+            if idx_select >= 0:
+                return (
+                    lstripped[:idx_select]
+                    + "SELECT /*+ MONITOR */"
+                    + lstripped[idx_select + len("SELECT"):]
+                )
+        return sql
+
     def flush_shared_pool(self) -> None:
         """Clear the shared pool between scenarios."""
         with self.acquire() as conn, conn.cursor() as cur:
