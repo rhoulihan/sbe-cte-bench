@@ -24,9 +24,15 @@ class OraclePreflightStatus:
     sga_target_mb: int
     pga_aggregate_target_mb: int
     statspack_installed: bool
+    is_autonomous: bool = False
 
     @property
     def ok(self) -> bool:
+        # Autonomous DB doesn't expose SGA/PGA params to non-DBA users — the
+        # OCPU envelope is enforced by Oracle Cloud, so missing values are
+        # expected, not a failure.
+        if self.is_autonomous:
+            return self.server_version != "unknown"
         return self.sga_target_mb > 0 and self.pga_aggregate_target_mb > 0
 
 
@@ -77,26 +83,57 @@ class OracleBench:
 
     def preflight(self) -> OraclePreflightStatus:
         with self.acquire() as conn, conn.cursor() as cur:
-            cur.execute("SELECT version_full FROM v$instance")
-            row = cur.fetchone()
-            version = str(row[0]) if row else "unknown"
+            # Detect Autonomous DB — has CLOUD_SERVICE in v$pdbs / parameters
+            # but more reliable signal is whether v$instance is queryable by
+            # the current user (it's not on ADB).
+            is_autonomous = False
+            version = "unknown"
+            try:
+                cur.execute("SELECT version_full FROM v$instance")
+                row = cur.fetchone()
+                version = str(row[0]) if row else "unknown"
+            except oracledb.DatabaseError:
+                # ADB: v$instance is restricted. Fall back to v$version
+                # (accessible to non-DBA users) and flag as autonomous.
+                is_autonomous = True
+                try:
+                    cur.execute("SELECT banner_full FROM v$version WHERE rownum = 1")
+                    row = cur.fetchone()
+                    version = str(row[0]) if row else "unknown"
+                except oracledb.DatabaseError:
+                    cur.execute("SELECT banner FROM v$version WHERE rownum = 1")
+                    row = cur.fetchone()
+                    version = str(row[0]) if row else "unknown"
 
-            cur.execute(
-                "SELECT NAME, VALUE FROM v$parameter WHERE NAME IN ('sga_target', 'pga_aggregate_target')"
-            )
-            params = {name: int(value) for name, value in cur.fetchall()}
-            sga_mb = params.get("sga_target", 0) // (1024 * 1024)
-            pga_mb = params.get("pga_aggregate_target", 0) // (1024 * 1024)
+            sga_mb = 0
+            pga_mb = 0
+            try:
+                cur.execute(
+                    "SELECT NAME, VALUE FROM v$parameter"
+                    " WHERE NAME IN ('sga_target', 'pga_aggregate_target')"
+                )
+                params = {name: int(value) for name, value in cur.fetchall()}
+                sga_mb = params.get("sga_target", 0) // (1024 * 1024)
+                pga_mb = params.get("pga_aggregate_target", 0) // (1024 * 1024)
+            except oracledb.DatabaseError:
+                # ADB: v$parameter restricted. Memory is OCPU-controlled.
+                pass
 
-            cur.execute("SELECT COUNT(*) FROM dba_users WHERE username = 'PERFSTAT'")
-            statspack_count = cur.fetchone()[0]
-            statspack = bool(statspack_count)
+            statspack = False
+            try:
+                cur.execute("SELECT COUNT(*) FROM dba_users WHERE username = 'PERFSTAT'")
+                statspack_count = cur.fetchone()[0]
+                statspack = bool(statspack_count)
+            except oracledb.DatabaseError:
+                # ADB: dba_users restricted; ADB has built-in AWR instead.
+                pass
 
         return OraclePreflightStatus(
             server_version=version,
             sga_target_mb=sga_mb,
             pga_aggregate_target_mb=pga_mb,
             statspack_installed=statspack,
+            is_autonomous=is_autonomous,
         )
 
     def query(self, sql: str, parameters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
