@@ -63,26 +63,26 @@ class S07Recursive(ScenarioBase):
 
     @classmethod
     def variants(cls) -> list[Variant]:
+        # Restricted to variants that cross the threshold where the
+        # workload is large enough that engine architecture (not ADB
+        # per-query latency) determines the result. With branching=5
+        # the full 100K-employee tree saturates around depth 8; the
+        # depth-6 to depth-10 band is where Mongo's $graphLookup BFS
+        # round-trips compound vs Oracle's recursive CTE / CONNECT BY.
+        #
+        # Variants dropped from earlier design (small-graph variants
+        # whose result was dominated by ADB query overhead, not engine
+        # architecture):
+        #   org-d2 (25-node walk), org-d5 (3K), bom-* (50K parts but
+        #   small reachable subtrees), cycle-* (sparse), path-d5 (3K).
         return [
-            # Depth scaling — org subtree subordinate-count + salary rollup.
-            Variant(label="org-d2", parameters={"family": "org", "depth": 2}),
-            Variant(label="org-d5", parameters={"family": "org", "depth": 5}),
+            # Depth scaling on subtree count + salary rollup.
+            Variant(label="org-d6", parameters={"family": "org", "depth": 6}),
+            Variant(label="org-d8", parameters={"family": "org", "depth": 8}),
             Variant(label="org-d10", parameters={"family": "org", "depth": 10}),
             Variant(label="org-d15", parameters={"family": "org", "depth": 15}),
-            # Recursive computation — BOM quantity rollup.
-            Variant(label="bom-shallow", parameters={"family": "bom", "depth": 3}),
-            Variant(label="bom-deep", parameters={"family": "bom", "depth": 10}),
-            # Cycle detection — referral graph traversal.
-            Variant(
-                label="cycle-small",
-                parameters={"family": "cycle", "start": _CYCLE_ROOT_SMALL, "depth": 10},
-            ),
-            Variant(
-                label="cycle-large",
-                parameters={"family": "cycle", "start": _CYCLE_ROOT_LARGE, "depth": 20},
-            ),
-            # Path materialization.
-            Variant(label="path-d5", parameters={"family": "path", "depth": 5}),
+            # Path materialization at scale.
+            Variant(label="path-d8", parameters={"family": "path", "depth": 8}),
             Variant(label="path-d10", parameters={"family": "path", "depth": 10}),
         ]
 
