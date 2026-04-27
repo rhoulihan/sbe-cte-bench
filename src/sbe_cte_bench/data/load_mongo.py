@@ -27,6 +27,10 @@ _ENTITIES = (
     ("products.jsonl", "products"),
     ("customers.jsonl", "customers"),
     ("orders.jsonl", "orders"),
+    # Recursive-graph entities (S07).
+    ("employees.jsonl", "employees"),
+    ("parts.jsonl", "parts"),
+    ("bom_edges.jsonl", "bom_edges"),
 )
 
 
@@ -105,6 +109,21 @@ def _create_indexes(bench: MongoBench) -> None:
     bench.db.orders.create_index([("customer_id", 1), ("order_date", 1)])
     bench.db.orders.create_index([("status", 1)])
     bench.db.orders.create_index([("line_items.product_id", 1)])
+    # Recursive-graph entity indexes (S07). $graphLookup uses these for
+    # the per-iteration "match-the-link-field" step.
+    if "employees" in bench.db.list_collection_names():
+        bench.db.employees.create_index([("employee_id", 1)], unique=True)
+        bench.db.employees.create_index([("manager_id", 1)])
+        bench.db.employees.create_index([("dept", 1)])
+    if "parts" in bench.db.list_collection_names():
+        bench.db.parts.create_index([("part_id", 1)], unique=True)
+        bench.db.parts.create_index([("level", 1)])
+    if "bom_edges" in bench.db.list_collection_names():
+        bench.db.bom_edges.create_index([("parent_part_id", 1)])
+        bench.db.bom_edges.create_index([("child_part_id", 1)])
+    # customers.referred_by (added inline by the generator) — index for
+    # the cycle-detection variant.
+    bench.db.customers.create_index([("referred_by", 1)])
 
 
 def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
@@ -123,7 +142,7 @@ def _iter_jsonl(path: Path) -> Iterator[dict[str, Any]]:
                 yield _coerce_types(json.loads(stripped))
 
 
-_DATETIME_FIELDS = frozenset({"signup_date", "order_date", "event_at"})
+_DATETIME_FIELDS = frozenset({"signup_date", "order_date", "event_at", "hire_date"})
 _NUMERIC_FIELDS = frozenset({"price", "unit_price", "discount", "extended_price"})
 
 

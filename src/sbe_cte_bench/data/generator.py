@@ -61,6 +61,12 @@ _SCALE_COUNTS: dict[ScaleFactor, dict[str, int]] = {
         "customers": 1_000,
         "products": 100,
         "orders": 1_000,
+        # Recursive-graph entities (S07 — see docs/scenarios/S07).
+        "employees": 1_000,
+        "employees_branching": 5,
+        "parts": 500,
+        "bom_levels": 4,
+        "referral_cycle_count": 5,
     },
     ScaleFactor.SF0_1: {
         "regions": 50,
@@ -71,6 +77,11 @@ _SCALE_COUNTS: dict[ScaleFactor, dict[str, int]] = {
         "customers": 10_000,
         "products": 1_000,
         "orders": 100_000,
+        "employees": 10_000,
+        "employees_branching": 5,
+        "parts": 5_000,
+        "bom_levels": 5,
+        "referral_cycle_count": 50,
     },
     ScaleFactor.SF1: {
         "regions": 50,
@@ -81,6 +92,11 @@ _SCALE_COUNTS: dict[ScaleFactor, dict[str, int]] = {
         "customers": 100_000,
         "products": 10_000,
         "orders": 1_000_000,
+        "employees": 100_000,  # depth ~7 with branching=5
+        "employees_branching": 5,
+        "parts": 50_000,  # ~6 BOM levels, ~150K bom_edges
+        "bom_levels": 6,
+        "referral_cycle_count": 500,  # ~0.5% of customers form cycles
     },
 }
 
@@ -158,6 +174,25 @@ def generate(
         rng=Generator(PCG64(seed + 6)),
     )
 
+    # Recursive-graph entities (S07). Decoupled from the e-commerce flow so
+    # generation order is stable.
+    employees = _gen_employees(
+        counts["employees"],
+        branching=counts["employees_branching"],
+        rng=Generator(PCG64(seed + 7)),
+    )
+    parts, bom_edges = _gen_parts_and_bom(
+        n_parts=counts["parts"],
+        levels=counts["bom_levels"],
+        rng=Generator(PCG64(seed + 8)),
+    )
+    # Inject referral edges (and a small number of cycles) into customers.
+    _inject_customer_referrals(
+        customers,
+        cycle_count=counts["referral_cycle_count"],
+        rng=Generator(PCG64(seed + 9)),
+    )
+
     written: dict[str, list[dict[str, Any]]] = {
         "regions.jsonl": regions,
         "suppliers.jsonl": suppliers,
@@ -165,6 +200,9 @@ def generate(
         "products.jsonl": products,
         "customers.jsonl": customers,
         "orders.jsonl": orders,
+        "employees.jsonl": employees,
+        "parts.jsonl": parts,
+        "bom_edges.jsonl": bom_edges,
     }
 
     hashes: dict[str, str] = {}
@@ -180,6 +218,9 @@ def generate(
         "products": len(products),
         "customers": len(customers),
         "orders": len(orders),
+        "employees": len(employees),
+        "parts": len(parts),
+        "bom_edges": len(bom_edges),
     }
 
     manifest = Manifest(seed=seed, scale=scale, counts=actual_counts, hashes=hashes)
@@ -391,6 +432,152 @@ def _gen_orders(
             }
         )
     return out
+
+
+def _gen_employees(
+    n: int, *, branching: int, rng: Generator
+) -> list[dict[str, Any]]:
+    """Build a deterministic balanced org tree.
+
+    Employee 1 is the root (manager_id NULL). For ``i ≥ 2`` we set
+    ``manager_id = floor((i - 2) / branching) + 1``. With ``branching = 5``
+    and ``n = 100_000`` this produces depth ~7 (``ceil(log_5(100K))``),
+    which is the realistic shape for an enterprise org chart and large
+    enough that ``$graphLookup`` cannot just walk the whole graph in cache.
+
+    Each employee has a salary drawn from a tiered lognormal distribution
+    so subtree-rollup queries (S07-bom-style with sums) produce non-trivial
+    aggregates.
+    """
+    departments = ("eng", "sales", "ops", "finance", "support", "product")
+    out: list[dict[str, Any]] = []
+    for i in range(1, n + 1):
+        manager_id = None if i == 1 else ((i - 2) // branching) + 1
+        # Salary: lognormal with mean varied by depth (rough proxy: shallower
+        # employees earn more on average).
+        depth_proxy = 0 if manager_id is None else int(np.log(i) / np.log(branching))
+        base = 60000 + 8000 * (8 - min(depth_proxy, 7))
+        salary = float(rng.lognormal(mean=np.log(base), sigma=0.25))
+        hire_year = int(rng.integers(2010, 2025))
+        hire_doy = int(rng.integers(1, 366))
+        hire = datetime(hire_year, 1, 1, tzinfo=UTC) + timedelta(days=hire_doy - 1)
+        out.append(
+            {
+                "employee_id": i,
+                "manager_id": manager_id,
+                "name": f"Employee-{i:07d}",
+                "dept": str(rng.choice(departments)),
+                "hire_date": hire.isoformat(),
+                "salary": float(round(salary, 2)),
+            }
+        )
+    return out
+
+
+def _gen_parts_and_bom(
+    *, n_parts: int, levels: int, rng: Generator
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build a Bill-of-Materials DAG.
+
+    Parts are partitioned into ``levels`` strata. The deepest stratum is
+    leaf parts (``leaf=True``); each higher stratum is an "assembly" that
+    has 2-5 children drawn from the next-deeper stratum (with ~10%
+    occasional cross-stratum reuse so the structure is a DAG, not strict
+    tree). Each BOM edge carries a ``quantity`` to be multiplied through
+    on rollup queries.
+
+    The shape is chosen so that:
+    - Total parts ≈ ``n_parts``.
+    - Total edges ≈ 3 × leaf_count (so traversal cost ~ O(parts)).
+    - A "find all leaf parts under top-level assembly X" query produces
+      hundreds-to-thousands of paths per top assembly.
+    """
+    # Distribute parts across levels with more on lower (leaf) levels.
+    # Geometric-ish: each higher level has ~half as many parts.
+    weights = np.array([2 ** i for i in range(levels)], dtype=np.float64)
+    weights /= weights.sum()
+    per_level = [max(1, int(round(n_parts * w))) for w in weights]
+    # Pad/trim so total == n_parts.
+    diff = n_parts - sum(per_level)
+    per_level[-1] += diff
+
+    parts: list[dict[str, Any]] = []
+    level_ranges: list[tuple[int, int]] = []  # (start_id, end_id) per level
+    next_id = 1
+    for lvl, count in enumerate(per_level):
+        start = next_id
+        for j in range(count):
+            is_leaf = lvl == levels - 1
+            unit_cost = float(rng.uniform(1.0, 50.0)) if is_leaf else 0.0
+            parts.append(
+                {
+                    "part_id": next_id,
+                    "name": f"Part-L{lvl}-{j:06d}",
+                    "level": lvl,  # 0 = top assembly, levels-1 = leaf
+                    "leaf": is_leaf,
+                    "unit_cost": float(round(unit_cost, 2)),
+                }
+            )
+            next_id += 1
+        level_ranges.append((start, next_id - 1))
+
+    edges: list[dict[str, Any]] = []
+    for parent_lvl in range(levels - 1):
+        parent_start, parent_end = level_ranges[parent_lvl]
+        child_start, child_end = level_ranges[parent_lvl + 1]
+        children_pool = list(range(child_start, child_end + 1))
+        for parent_id in range(parent_start, parent_end + 1):
+            n_children = int(rng.integers(2, 6))  # 2-5 inclusive
+            picks = rng.choice(
+                children_pool, size=min(n_children, len(children_pool)), replace=False
+            )
+            for child_id in picks:
+                edges.append(
+                    {
+                        "parent_part_id": int(parent_id),
+                        "child_part_id": int(child_id),
+                        "quantity": int(rng.integers(1, 10)),
+                    }
+                )
+    return parts, edges
+
+
+def _inject_customer_referrals(
+    customers: list[dict[str, Any]],
+    *,
+    cycle_count: int,
+    rng: Generator,
+) -> None:
+    """Mutate ``customers`` in place to add a ``referred_by`` field.
+
+    Most customers reference an earlier customer (acyclic). A small
+    ``cycle_count`` of customers are paired with a later customer to
+    deliberately introduce cycles — this lets S07-cycle-* variants
+    measure cycle-detection cost (Mongo's ``$graphLookup`` auto-prunes;
+    Oracle's recursive CTE needs ``CYCLE`` clause / CONNECT_BY ``NOCYCLE``).
+    """
+    n = len(customers)
+    if n < 2:
+        return
+    # Customer 1 is the implicit root.
+    for i, c in enumerate(customers):
+        if i == 0:
+            c["referred_by"] = None
+            continue
+        # 70% have a referrer; pick uniformly from earlier customers.
+        if rng.random() < 0.7:
+            ref = int(rng.integers(1, i + 1))  # customer_ids are 1-indexed
+            c["referred_by"] = ref
+        else:
+            c["referred_by"] = None
+    # Inject cycles: pick `cycle_count` random customers and rewire their
+    # referred_by to a *later* customer, creating a back-edge.
+    if cycle_count > 0 and n > 10:
+        ids_picked = rng.choice(n - 10, size=min(cycle_count, n // 200), replace=False)
+        for idx in ids_picked:
+            cust = customers[int(idx)]
+            later_id = int(rng.integers(int(idx) + 2, n + 1))
+            cust["referred_by"] = later_id
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────

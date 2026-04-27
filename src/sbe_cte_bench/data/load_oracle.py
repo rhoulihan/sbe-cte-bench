@@ -83,12 +83,55 @@ _DDL_STATEMENTS: tuple[str, ...] = (
         revenue     NUMBER(18,2)
     )
     """,
+    # ── Recursive-graph entities (S07) ────────────────────────────────────
+    """
+    CREATE TABLE employees (
+        employee_id NUMBER PRIMARY KEY,
+        manager_id  NUMBER,
+        name        VARCHAR2(64) NOT NULL,
+        dept        VARCHAR2(16) NOT NULL,
+        hire_date   TIMESTAMP WITH TIME ZONE NOT NULL,
+        salary      NUMBER(12,2) NOT NULL,
+        CONSTRAINT fk_emp_mgr FOREIGN KEY (manager_id) REFERENCES employees(employee_id)
+    )
+    """,
+    """
+    CREATE TABLE parts (
+        part_id   NUMBER PRIMARY KEY,
+        name      VARCHAR2(64) NOT NULL,
+        level_num NUMBER NOT NULL,
+        leaf      NUMBER(1)    NOT NULL,
+        unit_cost NUMBER(10,2) NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE bom_edges (
+        parent_part_id NUMBER NOT NULL,
+        child_part_id  NUMBER NOT NULL,
+        quantity       NUMBER NOT NULL,
+        CONSTRAINT pk_bom_edges PRIMARY KEY (parent_part_id, child_part_id),
+        CONSTRAINT fk_bom_parent FOREIGN KEY (parent_part_id) REFERENCES parts(part_id),
+        CONSTRAINT fk_bom_child  FOREIGN KEY (child_part_id)  REFERENCES parts(part_id)
+    )
+    """,
+    """
+    CREATE TABLE customer_referrals (
+        customer_id NUMBER PRIMARY KEY,
+        referred_by NUMBER,
+        CONSTRAINT fk_cr_customer FOREIGN KEY (customer_id) REFERENCES customers(customer_id),
+        CONSTRAINT fk_cr_referrer FOREIGN KEY (referred_by) REFERENCES customers(customer_id)
+    )
+    """,
 )
 
 
 def create_schema(bench: OracleBench) -> None:
     """Create all benchmark tables. Idempotent — drops existing tables first."""
     drop_order = (
+        "customer_referrals",
+        "bom_edges",
+        "parts",
+        "employees",
         "customer_summary",
         "orders_doc",
         "products",
@@ -127,6 +170,19 @@ def load_oracle(
     stats["products"] = _load_products(bench, src / "products.jsonl", batch_size)
     stats["orders_doc"] = _load_orders_doc(bench, src / "orders.jsonl", batch_size)
 
+    # Recursive-graph entities (S07). Loaded only when files are present
+    # so existing test fixtures stay backward-compatible.
+    if (src / "employees.jsonl").exists():
+        stats["employees"] = _load_employees(bench, src / "employees.jsonl", batch_size)
+    if (src / "parts.jsonl").exists():
+        stats["parts"] = _load_parts(bench, src / "parts.jsonl", batch_size)
+    if (src / "bom_edges.jsonl").exists():
+        stats["bom_edges"] = _load_bom_edges(bench, src / "bom_edges.jsonl", batch_size)
+    # customer_referrals is derived from customers.jsonl (referred_by field)
+    stats["customer_referrals"] = _load_customer_referrals(
+        bench, src / "customers.jsonl", batch_size
+    )
+
     if create_indexes:
         _create_indexes(bench)
 
@@ -138,6 +194,13 @@ _INDEX_DDL: tuple[str, ...] = (
     "CREATE INDEX ix_prod_category ON products (category_id)",
     "CREATE INDEX ix_prod_sku ON products (sku)",
     "CREATE INDEX ix_cat_parent ON categories (parent_id)",
+    # Recursive-graph entity indexes (S07). The recursive-CTE / CONNECT BY
+    # plans rely on these for the recursive-step join.
+    "CREATE INDEX ix_emp_manager ON employees (manager_id)",
+    "CREATE INDEX ix_emp_dept ON employees (dept)",
+    "CREATE INDEX ix_bom_parent ON bom_edges (parent_part_id)",
+    "CREATE INDEX ix_bom_child ON bom_edges (child_part_id)",
+    "CREATE INDEX ix_cr_referrer ON customer_referrals (referred_by)",
     # Function-based indexes on common JSON paths in orders_doc — Mongo's
     # equivalent multi-key indexes are on the same logical fields.
     "CREATE INDEX ix_ord_date ON orders_doc "
@@ -299,3 +362,67 @@ def _load_orders_doc(bench: OracleBench, path: Path, batch_size: int) -> OracleL
     sql = "INSERT INTO orders_doc (order_id, payload) VALUES (:1, :2)"
     rows = ((r["order_id"], json.dumps(r)) for r in _iter_jsonl(path))
     return _executemany_with_stats(bench, sql, _batches(rows, batch_size), "orders_doc")
+
+
+def _load_employees(bench: OracleBench, path: Path, batch_size: int) -> OracleLoadStats:
+    from datetime import datetime
+
+    sql = (
+        "INSERT INTO employees "
+        "(employee_id, manager_id, name, dept, hire_date, salary) "
+        "VALUES (:1, :2, :3, :4, :5, :6)"
+    )
+    rows = (
+        (
+            r["employee_id"],
+            r["manager_id"],
+            r["name"],
+            r["dept"],
+            datetime.fromisoformat(r["hire_date"]),
+            r["salary"],
+        )
+        for r in _iter_jsonl(path)
+    )
+    return _executemany_with_stats(bench, sql, _batches(rows, batch_size), "employees")
+
+
+def _load_parts(bench: OracleBench, path: Path, batch_size: int) -> OracleLoadStats:
+    sql = (
+        "INSERT INTO parts (part_id, name, level_num, leaf, unit_cost) "
+        "VALUES (:1, :2, :3, :4, :5)"
+    )
+    rows = (
+        (r["part_id"], r["name"], r["level"], 1 if r["leaf"] else 0, r["unit_cost"])
+        for r in _iter_jsonl(path)
+    )
+    return _executemany_with_stats(bench, sql, _batches(rows, batch_size), "parts")
+
+
+def _load_bom_edges(bench: OracleBench, path: Path, batch_size: int) -> OracleLoadStats:
+    sql = (
+        "INSERT INTO bom_edges (parent_part_id, child_part_id, quantity) "
+        "VALUES (:1, :2, :3)"
+    )
+    rows = (
+        (r["parent_part_id"], r["child_part_id"], r["quantity"])
+        for r in _iter_jsonl(path)
+    )
+    return _executemany_with_stats(bench, sql, _batches(rows, batch_size), "bom_edges")
+
+
+def _load_customer_referrals(
+    bench: OracleBench, customers_path: Path, batch_size: int
+) -> OracleLoadStats:
+    """Project the ``referred_by`` field from customers.jsonl into a flat table.
+
+    Kept separate from ``customers`` so it can be queried as a clean graph
+    without the rest of the customer payload.
+    """
+    sql = "INSERT INTO customer_referrals (customer_id, referred_by) VALUES (:1, :2)"
+    rows = (
+        (r["customer_id"], r.get("referred_by"))
+        for r in _iter_jsonl(customers_path)
+    )
+    return _executemany_with_stats(
+        bench, sql, _batches(rows, batch_size), "customer_referrals"
+    )

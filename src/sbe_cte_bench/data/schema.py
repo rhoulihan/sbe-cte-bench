@@ -57,6 +57,9 @@ class Customer(_Base):
     signup_date: datetime
     tier: CustomerTier
     metadata: dict[str, Any]
+    # Self-FK for S07 cycle/referral variants. None for the implicit root
+    # and for customers who weren't assigned a referrer.
+    referred_by: int | None = None
 
 
 class Product(_Base):
@@ -96,3 +99,30 @@ class Order(_Base):
     line_items: list[LineItem]
     notes: str | None
     audit: list[AuditEvent]
+
+
+# ── Recursive-graph entities (S07) ────────────────────────────────────────
+
+
+class Employee(_Base):
+    employee_id: int
+    manager_id: int | None
+    name: str
+    dept: Literal["eng", "sales", "ops", "finance", "support", "product"]
+    hire_date: datetime
+    salary: float
+
+
+class Part(_Base):
+    part_id: int
+    name: str
+    level: int
+    leaf: bool
+    unit_cost: float
+
+
+class BomEdge(_Base):
+    parent_part_id: int
+    child_part_id: int
+    quantity: int = Field(ge=1)
+
