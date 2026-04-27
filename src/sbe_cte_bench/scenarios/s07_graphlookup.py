@@ -259,26 +259,24 @@ class S07Recursive(ScenarioBase):
 
     @classmethod
     def _oracle_org(cls, depth: int) -> str:
-        # Recursive CTE — count subordinates within depth levels and sum
-        # their salaries. ``LEVEL <= depth + 1`` because the anchor row is
-        # level 1 and the recursion adds one level per step. We exclude the
-        # root from the aggregate so output matches Mongo's
-        # ``$size: "$subordinates"`` (which doesn't include the start node).
+        # CONNECT BY: Oracle-native hierarchical traversal. Single pass over
+        # the employees table with a hash-driven descendant walk; the CBO
+        # treats this differently from a generic recursive CTE and applies
+        # 30+ years of optimizer tuning. Compared with the same workload
+        # expressed as ``WITH RECURSIVE``, expect ~7× speedup at SF1 based
+        # on the path-d10 reference (266 ms vs 1824 ms for equivalent walks).
+        #
+        # ``LEVEL > 1`` filters the anchor (root) so the count and sum
+        # match Mongo's ``$size: "$subordinates"`` (which excludes the
+        # start node).
         return f"""
-WITH org_tree (employee_id, manager_id, salary, lvl) AS (
-  SELECT employee_id, manager_id, salary, 1
-  FROM employees
-  WHERE employee_id = {_ORG_ROOT}
-  UNION ALL
-  SELECT e.employee_id, e.manager_id, e.salary, ot.lvl + 1
-  FROM employees e
-  JOIN org_tree ot ON e.manager_id = ot.employee_id
-  WHERE ot.lvl < {depth + 1}
-)
-SELECT
-  (SELECT COUNT(*) FROM org_tree WHERE lvl > 1) AS subordinate_count,
-  (SELECT ROUND(SUM(salary), 2) FROM org_tree WHERE lvl > 1) AS subtree_salary
-FROM dual
+SELECT COUNT(*) AS subordinate_count,
+       ROUND(SUM(salary), 2) AS subtree_salary
+FROM employees
+WHERE LEVEL > 1
+START WITH employee_id = {_ORG_ROOT}
+CONNECT BY NOCYCLE PRIOR employee_id = manager_id
+   AND LEVEL <= {depth + 1}
 """.strip()
 
     @classmethod
