@@ -92,11 +92,17 @@ _SCALE_COUNTS: dict[ScaleFactor, dict[str, int]] = {
         "customers": 100_000,
         "products": 10_000,
         "orders": 1_000_000,
-        "employees": 100_000,  # depth ~7 with branching=5
-        "employees_branching": 5,
-        "parts": 50_000,  # ~6 BOM levels, ~150K bom_edges
+        # Wide-fanout org tree (branching=50): depth-2 ≈ 2.5K nodes
+        # (real BFS work without saturating), depth-3 covers all 100K.
+        # The original branching=5 left depth-2 with only 25 nodes —
+        # cache-resident, swamped by query overhead. Realistic enterprise
+        # org-charts rarely exceed ~50 direct reports, so this stays
+        # defensible.
+        "employees": 100_000,
+        "employees_branching": 50,
+        "parts": 50_000,
         "bom_levels": 6,
-        "referral_cycle_count": 500,  # ~0.5% of customers form cycles
+        "referral_cycle_count": 500,
     },
 }
 
