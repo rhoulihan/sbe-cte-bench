@@ -162,12 +162,15 @@ class OracleBench:
 
         Uses ``EXPLAIN PLAN FOR`` + ``DBMS_XPLAN.DISPLAY`` to get a stable
         text representation. Doesn't execute the query.
+
+        Format ``'ALL'`` includes the access paths (so Exadata Smart Scan
+        ``TABLE ACCESS STORAGE FULL`` is visible), parallel directives,
+        and column projection.
         """
         with self.acquire() as conn, conn.cursor() as cur:
             cur.execute(f"EXPLAIN PLAN SET STATEMENT_ID = 'sbecte' FOR {sql}")
             cur.execute(
-                "SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY('PLAN_TABLE', 'sbecte', "
-                "'TYPED ROWS BYTES COST PARTITION PARALLEL PREDICATE PROJECTION'))"
+                "SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY('PLAN_TABLE', 'sbecte', 'ALL'))"
             )
             return "\n".join(row[0] for row in cur.fetchall() if row[0] is not None)
 
