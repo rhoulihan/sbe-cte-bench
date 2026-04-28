@@ -18,7 +18,6 @@ from sbe_cte_bench.scenarios import (
     s12_concurrent,
     s13_planner_stability,
     s14_write_path,
-    s15_plan_cache,
 )
 from sbe_cte_bench.scenarios._base import (
     Prediction,
@@ -47,5 +46,4 @@ __all__ = (
     "s12_concurrent",
     "s13_planner_stability",
     "s14_write_path",
-    "s15_plan_cache",
 )

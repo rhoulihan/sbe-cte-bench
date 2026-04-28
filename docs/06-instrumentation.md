@@ -184,7 +184,7 @@ Statspack reports closely mirror AWR's structure, with reduced ASH-driven detail
 
 #### Why this matters for the benchmark
 
-For per-query architectural claims (S01–S10), the per-query `dbms_xplan` already shows the plan and per-step costs. For *systemic* claims — concurrent load (S12), plan-cache pollution (S15), planner stability across scale (S13) — the time-windowed Statspack report is the right granularity. We capture both because they answer different questions:
+For per-query architectural claims (S01–S10), the per-query `dbms_xplan` already shows the plan and per-step costs. For *systemic* claims — concurrent load (S12), planner stability across scale (S13) — the time-windowed Statspack report is the right granularity. We capture both because they answer different questions:
 
 - Per-query instrumentation answers: *What plan ran? How much memory did each operator consume?*
 - Statspack snapshots answer: *During the entire iteration window, what was the engine waiting on? Where did time go that doesn't show up in any single query's stats?*

@@ -160,8 +160,7 @@ sbe-cte-bench/
 │       │   ├── s11_oson_deep.py
 │       │   ├── s12_concurrent.py
 │       │   ├── s13_planner_stability.py
-│       │   ├── s14_write_path.py
-│       │   └── s15_plan_cache.py
+│       │   └── s14_write_path.py
 │       └── reporting/
 │           ├── __init__.py
 │           ├── aggregate.py         ← results/raw → results/processed
@@ -419,12 +418,11 @@ Eleven phases, ordered by dependency. Each phase has explicit acceptance criteri
 9. **S10 top-N** — reuses runner
 10. **S11 OSON deep** — introduces depth sweep
 11. **S13 planner stability** — introduces multi-scale data load
-12. **S15 plan cache pollution** — introduces parameterized-shape generation
-13. **S14 V14a/b** — introduces write-path; reuses standard topology
-14. **S06 sharded $lookup** — introduces sharded topology lifecycle
-15. **S07 sharded variant** — reuses S06 topology
-16. **S14 V14c sharded** — reuses S06 topology
-17. **S12 concurrent** — last; depends on all other scenarios for the workload mix
+12. **S14 V14a/b** — introduces write-path; reuses standard topology
+13. **S06 sharded $lookup** — introduces sharded topology lifecycle
+14. **S07 sharded variant** — reuses S06 topology
+15. **S14 V14c sharded** — reuses S06 topology
+16. **S12 concurrent** — last; depends on all other scenarios for the workload mix
 
 **Per-scenario TDD pattern:**
 - `tests/e2e/test_sxx.py::test_runs_at_sf0_001` — scenario completes; equivalence hash matches; run record valid

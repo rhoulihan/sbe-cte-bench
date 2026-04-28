@@ -39,7 +39,7 @@ def test_help_lists_subcommands(runner: CliRunner) -> None:
 def test_list_scenarios_prints_all(runner: CliRunner) -> None:
     result = runner.invoke(main_group, ["list", "scenarios"])
     assert result.exit_code == 0
-    for sid in ("S01", "S02", "S03", "S04", "S05", "S15"):
+    for sid in ("S01", "S02", "S03", "S04", "S05", "S14"):
         assert sid in result.output
 
 

@@ -39,7 +39,7 @@ The article makes eleven claims. Each one maps to at least one scenario in `docs
 > CPU-microbenchmark scale and belong in a separate harness, not in an
 > SBE-vs-CTE aggregation comparison.
 
-Three additional scenarios — S12, S13, S14, S15 — cover dimensions the article underweights but that are crucial for a credible result: concurrent-load behavior, planner stability under cardinality drift, write-path semantics with `$merge` vs `MERGE INTO`, and plan-cache pollution under bursty workloads.
+Three additional scenarios — S12, S13, S14 — cover dimensions the article underweights but that are crucial for a credible result: concurrent-load behavior, planner stability under cardinality drift, and write-path semantics with `$merge` vs `MERGE INTO`.
 
 ## What a successful benchmark run looks like
 
@@ -63,7 +63,7 @@ The predictions are what make this a falsifiable benchmark rather than a confirm
 3. **`03-data-model.md`** — synthetic schema, scale factors, generator design, RNG seed, byte-stability.
 4. **`04-indexes.md`** — index parity strategy, per-scenario index sets.
 5. **`05-scenarios-index.md`** — one-line index of all scenarios with status.
-6. **`scenarios/S01.md` … `scenarios/S15.md`** — one spec per scenario.
+6. **`scenarios/S01.md` … `scenarios/S14.md`** — one spec per scenario.
 7. **`06-instrumentation.md`** — what to capture during each run.
 8. **`07-reporting.md`** — output JSON schema, plot conventions.
 9. **`08-fairness-charter.md`** — explicit fairness commitments and their boundaries.

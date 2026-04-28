@@ -1,6 +1,6 @@
 # 05 — Scenarios Index
 
-Fourteen scenarios cover the testable claims from the article plus four research-driven dimensions (planner stability, write path, plan cache, concurrency). Each scenario is a standalone spec with its own data, queries, predictions, and pass/fail criteria.
+Thirteen scenarios cover the testable claims from the article plus three research-driven dimensions (planner stability, write path, concurrency). Each scenario is a standalone spec with its own data, queries, predictions, and pass/fail criteria.
 
 > The article's storage-format claim (BSON length-prefix scan vs OSON
 > hash-indexed navigation, 28×/529× headline) is **out of scope** for this
@@ -26,11 +26,10 @@ Fourteen scenarios cover the testable claims from the article plus four research
 | **S12** | Concurrent load | N concurrent workers running a representative scenario. Measures contention behavior, tail latency. | (research dim 3) | spec'd |
 | **S13** | Planner stability under cardinality drift | Same query, 10×/100×/1000× data scale. MongoDB FPTP vs Oracle CBO replan. | (research dim 1) | spec'd |
 | **S14** | Write path: `$merge` vs `MERGE INTO` | Persisting aggregation results back to a collection/table, with consistency semantics. | (research dim 4) | spec'd |
-| **S15** | Plan-cache pollution | 10 K distinct query shapes in a bursty workload. Plan-cache hit rate, recompilation cost, tail latency. | (research dim 5) | spec'd |
 
 ## Reading order
 
-S01 first — it calibrates the noise floor and verifies the harness. Then any of S02–S10 in any order; they're independent. S12–S15 require S02–S05 to have produced reasonable results first (they reuse those queries under different conditions).
+S01 first — it calibrates the noise floor and verifies the harness. Then any of S02–S10 in any order; they're independent. S12–S14 require S02–S05 to have produced reasonable results first (they reuse those queries under different conditions).
 
 ## Naming conventions
 

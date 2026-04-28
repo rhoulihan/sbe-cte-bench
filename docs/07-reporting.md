@@ -136,7 +136,6 @@ The headline of any benchmark is one summary table that fits on a slide:
 | S12 @ 32 concurrent | Tail latency | p99 = 8.4 s | p99 = 410 ms | **20.5×** |
 | S13 (10× scale) | Planner stability | drift ±18% | drift ±2% | (n/a) |
 | S14 (100K row $merge) | Write path | 1.84 s | 940 ms | 1.96× |
-| S15 (10K query shapes) | Plan cache | hit rate 31% | hit rate 87% | (n/a) |
 
 Numbers in this table are **placeholders**. They illustrate the *expected shape* of the result, not predictions of the actual measured values. Predictions per-scenario are in each scenario spec.
 

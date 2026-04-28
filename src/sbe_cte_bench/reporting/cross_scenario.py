@@ -244,7 +244,7 @@ def render_report(rows: list[ScenarioRow], *, scale_factor: str = "SF0.001") -> 
         "uv run sbe-cte-bench data generate --scale SF1",
         "uv run sbe-cte-bench data load --target both",
         "uv run sbe-cte-bench run S01 --warmup 2 --iterations 5",
-        "# … repeat for S02..S15 …",
+        "# … repeat for S02..S14 …",
         "uv run sbe-cte-bench report all --output results/processed/REPORT.md",
         "```",
         "",
@@ -275,8 +275,6 @@ def _finding_blurb(r: ScenarioRow) -> str:
         )
     if s == "S10":
         return "Top-N with downstream stages"
-    if s == "S15":
-        return "Plan-cache pollution at moderate shape budget"
     return r.scenario_title
 
 
@@ -290,8 +288,6 @@ def _mongo_wins_blurb(r: ScenarioRow) -> str:
         return "top-N with no downstream stages; SBE sort+limit fusion is competitive"
     if s == "S14":
         return "small upsert at SF0.001 is too cheap to expose architecture"
-    if s == "S15":
-        return "small shape budget — both engines hit cache; representative-shape baseline"
     return "indexed Mongo SBE prefix is competitive at this scale"
 
 

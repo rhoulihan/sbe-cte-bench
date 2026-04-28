@@ -29,7 +29,6 @@ Thirteen scenarios across the article's testable claims:
 | **S12** | Concurrent load (N=1, 2, 4, 8) | Tail latency under contention |
 | **S13** | Planner stability under cardinality drift | CBO replan vs Mongo FPTP |
 | **S14** | Write path `$merge` vs `MERGE INTO` | Persisting aggregation results back |
-| **S15** | Plan-cache pollution under bursty workload | 100/1K/10K distinct query shapes |
 
 Each scenario produces a JSON record with timings, equivalence hashes, explain plans, and prediction outcomes.
 
