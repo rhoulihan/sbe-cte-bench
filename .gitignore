@@ -7,6 +7,7 @@ data/generated/
 # Run output
 results/raw/
 results/processed/
+results/sql_monitor/
 results/charts/*.svg
 !results/charts/.gitkeep
 
