@@ -76,6 +76,51 @@ def _pretty_json(obj: Any, indent: int = 2) -> str:
     return html.escape(s)
 
 
+# Variants where MISMATCH is by design — the architectural finding the
+# scenario was built to demonstrate, not a bug. Keys are (scenario_id,
+# variant_label_substring); a None substring matches all variants.
+_EXPECTED_MISMATCH: dict[tuple[str, str | None], str] = {
+    ("S05", "base"): (
+        "Mongo aborts with BSONObjectTooLarge — the 16 MiB per-output-doc "
+        "cap is what this scenario is designed to demonstrate."
+    ),
+    ("S05", "out"): "Mongo aborts; $out also enforces per-doc cap.",
+    ("S05", "merge"): "Mongo aborts; $merge also enforces per-doc cap.",
+    ("S08", "B-facet"): (
+        "$facet collapses Mongo's output to a per-bucket shape; row count "
+        "diverges from Oracle's CTE result by design."
+    ),
+    ("S08", "B-bucketAuto"): (
+        "$bucketAuto reshapes output into bucket boundaries; row count "
+        "divergence is the architectural finding."
+    ),
+    ("S09", "C-facet-wrap"): (
+        "$facet wraps the pipeline; Mongo's output collapses to facet "
+        "structure where Oracle returns the inlined query result."
+    ),
+    ("S10", "C-top-n-facet"): (
+        "$facet wraps the top-N; Mongo emits one bucket-shaped doc; "
+        "Oracle returns the inlined top-N rows."
+    ),
+}
+
+
+def _expected_mismatch_reason(scenario: str, variant: str) -> str | None:
+    """Return the human-readable 'this MISMATCH is intentional' reason,
+    or ``None`` if the mismatch is genuinely unexpected.
+    """
+    for (sid, sub), reason in _EXPECTED_MISMATCH.items():
+        if sid != scenario:
+            continue
+        if sub is None or sub in variant:
+            return reason
+    # S08 A-clean-prefix and S09 A/B aren't in the dict because their
+    # MISMATCH is content-level (precision drift / Mongo's stage-bound
+    # filter dropping rows Oracle's CTE keeps) — those *are* surprising
+    # and worth highlighting, even if they're explainable.
+    return None
+
+
 def _summary_row(record: dict[str, Any], output_dir: Path) -> dict[str, Any]:
     """Extract the per-record fields the summary table needs."""
     m = record.get("mongo") or {}
@@ -93,15 +138,20 @@ def _summary_row(record: dict[str, Any], output_dir: Path) -> dict[str, Any]:
         except Exception:
             sm_link = sm_path
     ratio = _ratio(record)
+    scenario = record.get("scenario", "?")
+    variant = (record.get("variant") or {}).get("label", "default")
+    matched = bool(eq.get("match"))
+    expected_reason = None if matched else _expected_mismatch_reason(scenario, variant)
     return {
-        "scenario": record.get("scenario", "?"),
-        "variant": (record.get("variant") or {}).get("label", "default"),
+        "scenario": scenario,
+        "variant": variant,
         "mongo_median_ms": m.get("median_ms", 0.0),
         "mongo_p95_ms": m.get("p95_ms", 0.0),
         "oracle_median_ms": o.get("median_ms", 0.0),
         "oracle_p95_ms": o.get("p95_ms", 0.0),
         "ratio": ratio,
-        "match": bool(eq.get("match")),
+        "match": matched,
+        "expected_mismatch": expected_reason,
         "row_count_mongo": eq.get("row_count_mongo", 0),
         "row_count_oracle": eq.get("row_count_oracle", 0),
         "predicted_pass": bool(pred.get("pass") or pred.get("pass_")),
@@ -173,10 +223,19 @@ def _variant_pane(record: dict[str, Any], output_dir: Path, idx: int) -> str:
     sql = o.get("sql") or ""
     plan = o.get("plan") or {}
 
-    # Header summary
+    # Header summary. MISMATCHes the scenario was *designed* to surface
+    # are tagged "expected" so the dashboard reads as "feature, not bug".
     ratio = _ratio(record)
-    eq_text = "MATCH" if eq.get("match") else "MISMATCH"
-    eq_class = "ok" if eq.get("match") else "bad"
+    matched = bool(eq.get("match"))
+    expected_reason = (
+        None if matched else _expected_mismatch_reason(scenario, variant)
+    )
+    if matched:
+        eq_text, eq_class = "MATCH", "ok"
+    elif expected_reason is not None:
+        eq_text, eq_class = "EXPECTED MISMATCH", "expected"
+    else:
+        eq_text, eq_class = "MISMATCH", "bad"
     header = (
         f'<div class="variant-header">'
         f"<h3>{html.escape(variant)}</h3>"
@@ -186,7 +245,13 @@ def _variant_pane(record: dict[str, Any], output_dir: Path, idx: int) -> str:
         f'<span class="metric ratio">ratio <strong>{ratio:.2f}×</strong></span>'
         f'<span class="metric eq {eq_class}">{eq_text}</span>'
         f'<span class="metric">{eq.get("row_count_mongo", 0)} / {eq.get("row_count_oracle", 0)} rows</span>'
-        f"</div></div>"
+        f"</div>"
+        + (
+            f'<p class="mismatch-reason">⚠️ {html.escape(expected_reason)}</p>'
+            if expected_reason
+            else ""
+        )
+        + "</div>"
     )
 
     # Tabs (CSS-only via radio buttons)
@@ -231,13 +296,23 @@ def _scenario_section(scenario_id: str, records: list[dict[str, Any]], output_di
         eq = r.get("equivalence") or {}
         v = (r.get("variant") or {}).get("label", "default")
         ratio = _ratio(r)
-        eq_class = "ok" if eq.get("match") else "bad"
+        matched = bool(eq.get("match"))
+        expected = (
+            None if matched
+            else _expected_mismatch_reason(r.get("scenario", "?"), v)
+        )
+        if matched:
+            eq_text, eq_class = "MATCH", "ok"
+        elif expected:
+            eq_text, eq_class = "MISMATCH (expected)", "expected"
+        else:
+            eq_text, eq_class = "MISMATCH", "bad"
         rows_html.append(
             f"<tr><td>{html.escape(v)}</td>"
             f'<td class="num">{m.get("median_ms", 0.0):.1f}</td>'
             f'<td class="num">{o.get("median_ms", 0.0):.1f}</td>'
             f'<td class="num ratio"><strong>{ratio:.2f}×</strong></td>'
-            f'<td class="{eq_class}">{"MATCH" if eq.get("match") else "MISMATCH"}</td>'
+            f'<td class="{eq_class}">{eq_text}</td>'
             "</tr>"
         )
     table = (
@@ -298,6 +373,12 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
 td.ratio { color: var(--accent); }
 td.ok, span.ok { color: var(--ok); font-weight: 600; }
 td.bad, span.bad { color: var(--bad); font-weight: 600; }
+td.expected, span.expected { color: #b87f08; font-weight: 600; }
+.metric.eq.expected { background: #fff8e1; color: #b87f08; }
+p.mismatch-reason { font-size: 12px; color: #b87f08;
+                    background: #fff8e1; padding: 8px 12px;
+                    border-left: 3px solid #b87f08; margin: 8px 0 0;
+                    border-radius: 3px; }
 section.scenario { background: var(--bg-2); border: 1px solid var(--line);
                    border-radius: 8px; padding: 24px; margin-bottom: 24px; }
 section.scenario h2 { margin-top: 0; color: var(--accent-2); }
@@ -362,6 +443,7 @@ _TEMPLATE = """\
     <div class="kpi-grid">
       <div class="kpi"><div class="label">runs</div><div class="value">{n_runs}</div></div>
       <div class="kpi"><div class="label">equivalence MATCH</div><div class="value">{n_match}</div></div>
+      <div class="kpi"><div class="label">expected MISMATCH</div><div class="value">{n_expected_mismatch}</div></div>
       <div class="kpi"><div class="label">Oracle wins (≥1.5×)</div><div class="value">{n_oracle_wins}</div></div>
       <div class="kpi"><div class="label">peak Oracle ratio</div><div class="value">{peak_ratio:.1f}×</div></div>
     </div>
@@ -451,9 +533,23 @@ def render_dashboard(raw_dir: Path, output: Path, scale_factor: str = "SF1") -> 
     n_oracle_wins = sum(1 for s in summary_rows_data if s["ratio"] >= 1.5)
     peak_ratio = max((s["ratio"] for s in summary_rows_data), default=0.0)
 
+    n_expected_mismatch = sum(
+        1 for s in summary_rows_data if not s["match"] and s.get("expected_mismatch")
+    )
+
     summary_rows_html_parts: list[str] = []
     for s in summary_rows_data:
-        eq_class = "ok" if s["match"] else "bad"
+        if s["match"]:
+            eq_text, eq_class = "MATCH", "ok"
+        elif s.get("expected_mismatch"):
+            eq_text, eq_class = "MISMATCH (expected)", "expected"
+        else:
+            eq_text, eq_class = "MISMATCH", "bad"
+        eq_attr = (
+            f' title="{html.escape(s["expected_mismatch"])}"'
+            if s.get("expected_mismatch")
+            else ""
+        )
         sm_cell = (
             f'<a href="{html.escape(s["sql_monitor_link"])}" target="_blank" rel="noopener">view</a>'
             if s["sql_monitor_link"]
@@ -466,7 +562,7 @@ def render_dashboard(raw_dir: Path, output: Path, scale_factor: str = "SF1") -> 
             f"<td class='num'>{s['mongo_median_ms']:.1f}</td>"
             f"<td class='num'>{s['oracle_median_ms']:.1f}</td>"
             f"<td class='num ratio'><strong>{s['ratio']:.2f}×</strong></td>"
-            f"<td class='{eq_class}'>{'MATCH' if s['match'] else 'MISMATCH'}</td>"
+            f"<td class='{eq_class}'{eq_attr}>{eq_text}</td>"
             f"<td>{sm_cell}</td>"
             "</tr>"
         )
@@ -490,6 +586,7 @@ def render_dashboard(raw_dir: Path, output: Path, scale_factor: str = "SF1") -> 
             scale=html.escape(scale_factor),
             n_runs=n_runs,
             n_match=n_match,
+            n_expected_mismatch=n_expected_mismatch,
             n_oracle_wins=n_oracle_wins,
             peak_ratio=peak_ratio,
             summary_rows="".join(summary_rows_html_parts),
