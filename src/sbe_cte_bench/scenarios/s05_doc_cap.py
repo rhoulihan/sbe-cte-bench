@@ -1,31 +1,38 @@
-"""S05 — 16 MiB BSON document cap. Designed-failure scenario.
+"""S05 — designed-failure scenario covering MongoDB's two cliffs.
 
-The architectural claim under test: MongoDB's per-output-document 16 MiB
-cap is a hard ceiling that aborts ``$group`` accumulators (``$push``,
-``$addToSet``) when any single result document grows past it. Oracle has
-no equivalent per-output cap; ``JSON_ARRAYAGG`` over ``CLOB`` returns the
-full grouped array regardless of size.
+The architectural claim under test: MongoDB has *two* hard limits that
+abort ``$group`` aggregations when intermediates get large. Oracle has
+neither.
 
-Workload: filter to 2024+ orders (~250K orders given the SF1 generator),
-``$unwind`` line items into ~1.25M rows, then ``$group`` by ``status`` (5
-distinct values). Each output document accumulates ~250K line-item
-sub-documents — well over 16 MiB.
+1. **Per-operator 100 MB memory cap** on ``$push`` / ``$addToSet``. This
+   accumulator **cannot spill to disk** (unlike ``$group`` itself, which
+   can with ``allowDiskUse``). Hit it and Mongo aborts with
+   ``$push used too much memory and cannot spill to disk``.
 
-Variants demonstrate the cliff:
+2. **Per-output-document 16 MiB BSON cap.** If you reshape the query to
+   stay under the 100 MB operator limit but any single output document
+   still exceeds 16 MiB, Mongo aborts at serialization with
+   ``BSONObj size: NN is invalid``.
 
-* ``base``: in-memory ``$group`` returning the cursor — Mongo errors with
-  ``BSONObjectTooLarge``; Oracle returns 5 rows.
-* ``rewrite-bucket``: chunk by (``status``, year-month) so each
-  per-output document stays under the cap — Mongo succeeds; Oracle does
-  the same logical grouping.
-* ``out``: terminate with ``$out``. The collection write enforces the
-  same per-document cap, so this also fails on Mongo.
-* ``merge``: terminate with ``$merge``. Same per-document constraint;
-  same failure.
+Oracle's ``JSON_ARRAYAGG`` over ``CLOB`` has neither limit; the same
+logical workload returns the full grouped array regardless of size.
 
-Equivalence MISMATCH on the failing variants is *expected* — it's the
-finding the bench is designed to surface. Predictions check error rate,
-not equivalence.
+Workload: filter to 2024+ orders (~250K orders at SF1), ``$unwind`` line
+items into ~1.25M rows, then ``$group``. Variants:
+
+* ``base``: ``$group`` by ``status`` (5 groups). Each per-status
+  accumulator ≈ 200 MB → **fails at the 100 MB ``$push`` operator cap**.
+* ``out`` / ``merge``: same shape with a ``$out`` / ``$merge`` terminal.
+  The accumulator runs before the write, so it hits the **same 100 MB
+  operator cap** — terminal stages don't help.
+* ``rewrite-bucket``: chunk by (``status``, year-month) so per-bucket
+  accumulators stay under 100 MB. Some buckets clear the operator cap
+  but **still produce >16 MiB output documents** → fails at the
+  per-output-doc cap.
+
+Equivalence MISMATCH on all four variants is *expected* — it's the
+finding the bench is designed to surface. Predictions check Mongo error
+rate, not equivalence. The caps are the architectural cliff.
 """
 
 from __future__ import annotations
@@ -220,30 +227,23 @@ ORDER BY status, month
 
     @classmethod
     def predictions(cls, variant: Variant | None = None) -> list[Prediction]:
-        v = variant or Variant(label="base", parameters={})
-        if v.parameters.get("workaround") == "bucket":
-            # Escape hatch: per-(status, month) chunks fit under 16 MiB;
-            # both engines succeed and produce the same result.
-            return [
-                Prediction(
-                    claim="rewrite-bucket: both engines succeed (per-doc < 16 MiB)",
-                    metric="mongo_error_rate",
-                    operator="==",
-                    expected_value=0.0,
-                    confidence="very high",
-                ),
-            ]
-        # base / out / merge: per-status accumulator > 16 MiB; Mongo fails.
+        # All four variants are designed to fail on Mongo at SF1 — base /
+        # out / merge fail at the 100 MB per-operator cap on $push, and
+        # rewrite-bucket clears that but fails at the 16 MiB per-output-
+        # document cap. Both are architectural cliffs Oracle doesn't have.
         return [
             Prediction(
-                claim="Mongo errors with BSONObjectTooLarge on every iteration",
+                claim=(
+                    "Mongo aborts on every iteration — either the 100 MB "
+                    "per-operator $push cap or the 16 MiB per-output-doc cap"
+                ),
                 metric="mongo_error_rate",
                 operator=">=",
                 expected_value=0.9,
                 confidence="very high",
             ),
             Prediction(
-                claim="Oracle succeeds on every iteration (no per-doc cap)",
+                claim="Oracle succeeds on every iteration (no per-operator or per-doc cap)",
                 metric="oracle_error_rate",
                 operator="==",
                 expected_value=0.0,

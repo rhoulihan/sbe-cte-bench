@@ -81,11 +81,22 @@ def _pretty_json(obj: Any, indent: int = 2) -> str:
 # variant_label_substring); a None substring matches all variants.
 _EXPECTED_MISMATCH: dict[tuple[str, str | None], str] = {
     ("S05", "base"): (
-        "Mongo aborts with BSONObjectTooLarge — the 16 MiB per-output-doc "
-        "cap is what this scenario is designed to demonstrate."
+        "Mongo aborts at the 100 MB per-operator $push memory cap "
+        "($push cannot spill to disk). Oracle's JSON_ARRAYAGG has no "
+        "equivalent limit."
     ),
-    ("S05", "out"): "Mongo aborts; $out also enforces per-doc cap.",
-    ("S05", "merge"): "Mongo aborts; $merge also enforces per-doc cap.",
+    ("S05", "out"): (
+        "$out terminal still runs the accumulator first — same 100 MB "
+        "per-operator $push cap fires."
+    ),
+    ("S05", "merge"): (
+        "$merge terminal still runs the accumulator first — same 100 MB "
+        "per-operator $push cap fires."
+    ),
+    ("S05", "rewrite-bucket"): (
+        "Bucketed grouping clears the 100 MB operator cap, but per-bucket "
+        "output exceeds 16 MiB — Mongo aborts with BSONObj size invalid."
+    ),
     ("S08", "B-facet"): (
         "$facet collapses Mongo's output to a per-bucket shape; row count "
         "diverges from Oracle's CTE result by design."
