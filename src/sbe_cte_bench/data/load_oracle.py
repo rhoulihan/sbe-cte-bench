@@ -158,8 +158,17 @@ def load_oracle(
     data_dir: Path | str,
     batch_size: int = 1000,
     create_indexes: bool = True,
+    gather_stats: bool = True,
 ) -> dict[str, OracleLoadStats]:
-    """Load all benchmark entities from ``data_dir`` into the Oracle schema."""
+    """Load all benchmark entities from ``data_dir`` into the Oracle schema.
+
+    After data load + index creation, gathers schema-level optimizer stats
+    so the CBO has accurate cardinality and column histograms before the
+    first scenario runs. Without this, the CBO falls back to dynamic
+    sampling and picks suboptimal plans for first-call queries — which
+    inflates Oracle's first-iteration timings dramatically (e.g. S02
+    going from ~3 sec to ~5 sec without stats).
+    """
     src = Path(data_dir)
     stats: dict[str, OracleLoadStats] = {}
 
@@ -186,7 +195,46 @@ def load_oracle(
     if create_indexes:
         _create_indexes(bench)
 
+    if gather_stats:
+        stats["__gather_stats__"] = _gather_schema_stats(bench)
+
     return stats
+
+
+def _gather_schema_stats(bench: OracleBench) -> OracleLoadStats:
+    """Run ``DBMS_STATS.GATHER_SCHEMA_STATS`` for the connected user.
+
+    Uses 100% sampling (the SF1 schema is small enough that full samples
+    finish in seconds) and ``cascade=TRUE`` so index stats are rebuilt
+    alongside table stats. ``no_invalidate=FALSE`` forces re-parse of any
+    cached SQL so subsequent queries get the fresh plan immediately.
+    """
+    t0 = time.perf_counter()
+    rows_analyzed = 0
+    with bench.acquire() as conn, conn.cursor() as cur:
+        cur.execute("SELECT user FROM dual")
+        owner = cur.fetchone()[0]
+        cur.callproc(
+            "DBMS_STATS.GATHER_SCHEMA_STATS",
+            keyword_parameters={
+                "ownname": owner,
+                "estimate_percent": 100,
+                "method_opt": "FOR ALL COLUMNS SIZE AUTO",
+                "cascade": True,
+                "no_invalidate": False,
+                "options": "GATHER",
+            },
+        )
+        cur.execute(
+            "SELECT NVL(SUM(num_rows), 0) FROM user_tables"
+            " WHERE last_analyzed IS NOT NULL"
+        )
+        rows_analyzed = int(cur.fetchone()[0] or 0)
+    return OracleLoadStats(
+        table="__gather_stats__",
+        inserted=rows_analyzed,
+        elapsed_s=time.perf_counter() - t0,
+    )
 
 
 _INDEX_DDL: tuple[str, ...] = (
