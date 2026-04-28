@@ -60,6 +60,20 @@ mask engine architecture (M10–M40 IOPS scales with provisioned storage, not
 with workload). The setup we chose **maximizes Mongo's chances** while
 keeping the comparison defensible.
 
+### The bench is memory-unbound
+
+Headline storage measured during the actual sweep:
+
+| | MongoDB (WT snappy) | Oracle ADB (OSON, no HCC) |
+|---|---:|---:|
+| All data (compressed) | ~480 MB | ~1.6 GB |
+| WT cache cap / shared SGA | 1.5 GB | ~3 GB |
+| Cache currently holding | 1,205 MB (steady state) | most of it |
+
+The total working set is **smaller than each engine's cache budget**. Mongo's 1.5 GB WT cache holds the full 480 MB data + 106 MB indexes with ~295 MB to spare; ADB's ~3 GB shared SGA comfortably holds the 1.6 GB of Oracle segments. Both engines are cache-comfortable; neither is paying steady-state disk-read penalties.
+
+**This is on purpose.** The bench is deliberately not a "who runs out of cache first" comparison. The architectural cliffs the bench surfaces — the 100 MB per-operator `$push` cap, the 16 MiB per-output-document BSON cap, classic-engine fallback paths, stage-bound pipeline semantics — are **hardcoded engine limits that don't scale with RAM**. Doubling the VM memory would not change any headline number. The result is "engine architecture beats hardware throwing", and we make that argument cleanly only by ensuring nobody can dismiss the bench as memory-starved.
+
 ### The asymmetry worth noting
 
 We are benchmarking **a free service from Oracle that ships with HA, durability
